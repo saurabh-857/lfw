@@ -11,8 +11,8 @@ CFLAGS  := -Wall -Wextra -Werror
 OPTIMISE:= -O2
 INCLUDES:= -Iinclude
 BUILD   := build
-TESTBIN := $(BUILD)/lfw_tests
 PCAPTEST:= $(BUILD)/lfw_pcap_test
+LFWBIN  := $(BUILD)/lfw
 
 # ==============================
 # Source files
@@ -21,13 +21,13 @@ PCAPTEST:= $(BUILD)/lfw_pcap_test
 SRC_CORE := \
 	src/lfw_rules.c \
 	src/lfw_engine.c \
-	src/lfw_packet_parse.c
+	src/lfw_packet_parse.c \
+	src/lfw_config.c
 
-SRC_TEST := \
-	tests/test_main.c \
-	tests/test_packet_parse.c \
-	tests/test_rules.c \
-	tests/test_engine.c
+SRC_DAEMON := \
+	src/main.c \
+	src/lfw_nfqueue.c \
+	$(SRC_CORE)
 
 PCAP_SRC := \
 	tools/lfw_pcap_test.c
@@ -36,17 +36,9 @@ PCAP_SRC := \
 # Targets
 # ==============================
 
-.PHONY: all tests pcap-test clean
+.PHONY: all pcap-test lfw clean
 
-all: tests
-
-tests: $(TESTBIN)
-	@echo "[lfw] tests built successfully"
-
-$(TESTBIN): $(SRC_CORE) $(SRC_TEST) | $(BUILD)
-	$(CC) $(cstd) $(CFLAGS) $(OPTIMISE) $(INCLUDES) \
-		$(SRC_CORE) $(SRC_TEST) \
-		-o $(TESTBIN)
+all: lfw
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -61,6 +53,15 @@ $(PCAPTEST): $(PCAP_SRC) $(SRC_CORE) | $(BUILD)
 		$(PCAP_SRC) $(SRC_CORE) \
 		-Iinclude -lpcap \
 		-o $(PCAPTEST)
+
+lfw: $(LFWBIN)
+	@echo "[lfw] NFQUEUE firewall daemon built successfully"
+
+$(LFWBIN): $(SRC_DAEMON) | $(BUILD)
+	$(CC) $(cstd) $(CFLAGS) $(OPTIMISE) $(INCLUDES) \
+		$(SRC_DAEMON) \
+		-lnetfilter_queue \
+		-o $(LFWBIN)
 
 
 clean:
