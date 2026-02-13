@@ -59,19 +59,23 @@ lfw_status_t lfw_parse_ipv4_packet(const uint8_t *data, size_t len, lfw_directio
             break;
     }
 
-    /* Source IP */
-    out->ip4.src.addr =
-        ((lfw_u32)data[12] << 24) |
-        ((lfw_u32)data[13] << 16) |
-        ((lfw_u32)data[14] << 8)  |
-        ((lfw_u32)data[15]);
+    // /* Source IP */
+    // out->ip4.src.addr =
+    //     ((lfw_u32)data[12] << 24) |
+    //     ((lfw_u32)data[13] << 16) |
+    //     ((lfw_u32)data[14] << 8)  |
+    //     ((lfw_u32)data[15]);
 
-    /* Destination IP */
-    out->ip4.dst.addr =
-        ((lfw_u32)data[16] << 24) |
-        ((lfw_u32)data[17] << 16) |
-        ((lfw_u32)data[18] << 8)  |
-        ((lfw_u32)data[19]);
+    // /* Destination IP */
+    // out->ip4.dst.addr =
+    //     ((lfw_u32)data[16] << 24) |
+    //     ((lfw_u32)data[17] << 16) |
+    //     ((lfw_u32)data[18] << 8)  |
+    //     ((lfw_u32)data[19]);
+
+    memcpy(&out->ip4.src.addr, &data[12], sizeof(lfw_u32));
+    memcpy(&out->ip4.dst.addr, &data[16], sizeof(lfw_u32));
+
 
     /* Transport layer (TCP/UDP only) */
     if (out->protocol == LFW_PROTO_TCP || out->protocol == LFW_PROTO_UDP) {
@@ -87,6 +91,22 @@ lfw_status_t lfw_parse_ipv4_packet(const uint8_t *data, size_t len, lfw_directio
         out->l4.dst_port.port =
             ((lfw_u16)data[ip_header_len + 2] << 8) |
             ((lfw_u16)data[ip_header_len + 3]);
+
+        /* Stateful: mark new connections for rule evaluation */
+        if (out->protocol == LFW_PROTO_TCP) {
+            /* TCP: new = SYN and not ACK (first packet of connection) */
+            if (len >= ip_header_len + 14) {
+                uint8_t tcp_flags = data[ip_header_len + 13];
+                out->is_new_connection = ((tcp_flags & 0x02) != 0) && ((tcp_flags & 0x10) == 0);
+            } else {
+                out->is_new_connection = false;
+            }
+        } else {
+            /* UDP: no flags; treat each as "new" for rule eval, state table tracks repeats */
+            out->is_new_connection = true;
+        }
+    } else {
+        out->is_new_connection = false;
     }
 
     return LFW_OK;

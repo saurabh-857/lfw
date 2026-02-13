@@ -3,12 +3,14 @@
 
 /*
  * lfw - Linux Firewall
- * Rule evaluation engine
+ * Rule evaluation engine (supports stateful connection tracking)
  */
 
 #include "lfw_types.h"
 #include "lfw_packet.h"
 #include "lfw_rules.h"
+
+struct lfw_state;
 
 /* ==============================
  * Engine configuration
@@ -31,6 +33,7 @@ typedef struct {
 typedef struct {
     lfw_engine_config_t config;
     lfw_ruleset_t       ruleset;
+    struct lfw_state   *connection_state;  /* optional: stateful table; NULL = stateless */
 } lfw_engine_t;
 
 /* ==============================

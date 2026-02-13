@@ -3,6 +3,7 @@
 
 #include "lfw_nfqueue.h"
 #include "lfw_config.h"
+#include "lfw_state.h"
 
 int main(int argc, char **argv)
 {
@@ -44,7 +45,12 @@ int main(int argc, char **argv)
         default_action = LFW_ACTION_DROP;
     }
 
-    // create engine & rules
+    /* Connection state table for stateful filtering (new vs established) */
+    lfw_state_t *connection_state = lfw_state_create();
+    if (!connection_state) {
+        fprintf(stderr, "[lfw] warning: could not create connection state table; running stateless\n");
+    }
+
     lfw_engine_t engine = {
         .config = {
             .default_action = default_action
@@ -52,13 +58,15 @@ int main(int argc, char **argv)
         .ruleset = {
             .rules = rules,
             .rule_count = rule_count
-        }
+        },
+        .connection_state = connection_state
     };
 
-    printf("[lfw] starting firewall (config: %s, rules: %u, default: %s)\n",
+    printf("[lfw] starting firewall (config: %s, rules: %u, default: %s, stateful: %s)\n",
            config_path,
            engine.ruleset.rule_count,
-           (engine.config.default_action == LFW_ACTION_ACCEPT) ? "ACCEPT" : "DROP");
+           (engine.config.default_action == LFW_ACTION_ACCEPT) ? "ACCEPT" : "DROP",
+           connection_state ? "yes" : "no");
 
     // start NFQUEUE processing (blocks forever)
     status = lfw_nfqueue_run(&engine, 0);
@@ -68,6 +76,9 @@ int main(int argc, char **argv)
      * code is never reached, but it keeps things correct for tests
      * or controlled runs.
      */
+    if (connection_state) {
+        lfw_state_destroy(connection_state);
+    }
     if (status == LFW_OK && rules) {
         lfw_config_free_rules(rules);
     }

@@ -9,6 +9,7 @@
  * as seen by the firewall engine.
  */
 
+#include <stdbool.h>
 #include "lfw_types.h"
 
 /* ==============================
@@ -40,6 +41,14 @@ typedef struct {
 
     /* Layer 4 */
     lfw_l4_ports_t  l4;
+
+    /*
+     * Connection semantics (for stateful firewall).
+     * true = first packet of a connection (e.g. TCP SYN, or any UDP).
+     * Used so we only apply allow/deny rules to new connections;
+     * established traffic is allowed by connection table.
+     */
+    bool is_new_connection;
 
 } lfw_packet_t;
 

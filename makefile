@@ -22,7 +22,8 @@ SRC_CORE := \
 	src/lfw_rules.c \
 	src/lfw_engine.c \
 	src/lfw_packet_parse.c \
-	src/lfw_config.c
+	src/lfw_config.c \
+	src/lfw_state.c
 
 SRC_DAEMON := \
 	src/main.c \

@@ -11,6 +11,7 @@
 
 /*
  * Simple logging helper: print packet decision.
+ * Includes direction (INCOMING / OUTGOING / UNKNOWN).
  */
 static void lfw_log_packet(const lfw_packet_t *pkt, lfw_verdict_t verdict)
 {
@@ -20,6 +21,13 @@ static void lfw_log_packet(const lfw_packet_t *pkt, lfw_verdict_t verdict)
     unsigned short dport = 0;
     const char *proto_str = "any";
     const char *verdict_str = (verdict == LFW_VERDICT_ACCEPT) ? "ALLOW" : "DENY";
+    const char *dir_str = "UNKNOWN";
+
+    if (pkt->direction == LFW_DIR_INBOUND) {
+        dir_str = "INCOMING";
+    } else if (pkt->direction == LFW_DIR_OUTBOUND) {
+        dir_str = "OUTGOING";
+    }
 
     if (pkt->protocol == LFW_PROTO_TCP || pkt->protocol == LFW_PROTO_UDP) {
         sport = ntohs(pkt->l4.src_port.port);
@@ -33,19 +41,28 @@ static void lfw_log_packet(const lfw_packet_t *pkt, lfw_verdict_t verdict)
         default:             proto_str = "any";  break;
     }
 
-    printf("[lfw] %s %s %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u\n",
-           verdict_str,
-           proto_str,
-           (src >> 24) & 0xFF,
-           (src >> 16) & 0xFF,
-           (src >> 8)  & 0xFF,
-           src & 0xFF,
-           sport,
-           (dst >> 24) & 0xFF,
-           (dst >> 16) & 0xFF,
-           (dst >> 8)  & 0xFF,
-           dst & 0xFF,
-           dport);
+    char src_ip[16], dst_ip[16];
+
+    snprintf(src_ip, sizeof(src_ip), "%u.%u.%u.%u",
+            src & 0xFF,
+            (src >> 8) & 0xFF,
+            (src >> 16) & 0xFF,
+            (src >> 24) & 0xFF);
+
+    snprintf(dst_ip, sizeof(dst_ip), "%u.%u.%u.%u",
+            dst & 0xFF,
+            (dst >> 8) & 0xFF,
+            (dst >> 16) & 0xFF,
+            (dst >> 24) & 0xFF);
+
+    printf("[lfw] %-8s %-10s %-5s %15s:%-7u -> %16s:%-7u\n",
+        verdict_str,
+        dir_str,
+        proto_str,
+        src_ip,
+        sport,
+        dst_ip,
+        dport);
 }
 
 /*
@@ -63,8 +80,28 @@ static int lfw_nfqueue_cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg __attr
     lfw_verdict_t verdict = LFW_VERDICT_DROP;
 
     ph = nfq_get_msg_packet_hdr(nfa);
+    lfw_direction_t direction = LFW_DIR_UNKNOWN;
     if (ph) {
         packet_id = ntohl(ph->packet_id);
+
+        /* Map Netfilter hook to logical direction.
+         * PREROUTING / LOCAL_IN  -> INBOUND
+         * LOCAL_OUT              -> OUTBOUND
+         * FORWARD or others      -> UNKNOWN (transit traffic)
+         */
+        switch (ph->hook) {
+            case NF_INET_PRE_ROUTING:
+            case NF_INET_LOCAL_IN:
+                direction = LFW_DIR_INBOUND;
+                break;
+            case NF_INET_LOCAL_OUT:
+                direction = LFW_DIR_OUTBOUND;
+                break;
+            case NF_INET_FORWARD:
+            default:
+                direction = LFW_DIR_UNKNOWN;
+                break;
+        }
     }
 
     payload_len = nfq_get_payload(nfa, &payload);
@@ -72,7 +109,7 @@ static int lfw_nfqueue_cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg __attr
         goto out;
     }
 
-    if (lfw_parse_ipv4_packet(payload, (size_t)payload_len, LFW_DIR_INBOUND, &packet) != LFW_OK) {
+    if (lfw_parse_ipv4_packet(payload, (size_t)payload_len, direction, &packet) != LFW_OK) {
         goto out;
     }
 

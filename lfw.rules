@@ -10,15 +10,15 @@
 #   SRC/DST: any or IPv4 address
 #
 
-
+allow tcp from 127.0.0.1 to 127.0.0.1
 
 # Allow local web server for testing (HTTP)
 allow tcp 80
 
 # Allow HTTPS
 allow tcp 443
-allow tcp 8080
-# deny tcp 8080
+allow tcp 8081
+# deny tcp 8081
 
 # Allow DNS to this host (UDP 53)
 # allow udp 53
