@@ -1,54 +1,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "lfw_nfqueue.h"
 #include "lfw_config.h"
+#include "lfw_engine.h"
+#include "lfw_nfqueue.h"
 #include "lfw_state.h"
 
 int main(int argc, char **argv)
 {
     const char *config_path = "/etc/lfw/lfw.rules";
+
+    if (argc > 1)
+        config_path = argv[1];
+
     lfw_rule_t *rules = NULL;
     lfw_u32 rule_count = 0;
-    lfw_action_t default_action = LFW_ACTION_ACCEPT;
-    lfw_status_t status;
+    lfw_action_t default_action = LFW_ACTION_DROP;
 
-    /* Allow overriding the config path from the command line:
-     *   ./lfw /path/to/custom.rules
-     */
-    if (argc > 1) {
-        config_path = argv[1];
-    }
+    lfw_status_t st = lfw_config_load_file(
+        config_path,
+        &default_action,
+        &rules,
+        &rule_count
+    );
 
-    /* Try to load rules from the external config file. */
-    status = lfw_config_load_file(config_path,
-                                  &default_action,
-                                  &rules,
-                                  &rule_count);
-
-    if (status != LFW_OK) {
+    if (st != LFW_OK) {
         fprintf(stderr,
-                "[lfw] warning: failed to load config '%s', "
-                "falling back to default policy: deny all inbound\n",
+                "[lfw] failed to load config: %s\n",
                 config_path);
-
-        /* No explicit rules; engine will apply the default action
-         * to every packet. Set default to DROP to enforce:
-         *
-         *   - deny incoming
-         *   - no routing (handled by netfilter rules)
-         *   - only outgoing traffic permitted (we only enqueue
-         *     inbound packets into this NFQUEUE).
-         */
-        rules = NULL;
-        rule_count = 0;
-        default_action = LFW_ACTION_DROP;
+        return 1;
     }
 
-    /* Connection state table for stateful filtering (new vs established) */
-    lfw_state_t *connection_state = lfw_state_create();
-    if (!connection_state) {
-        fprintf(stderr, "[lfw] warning: could not create connection state table; running stateless\n");
+    lfw_state_t *state = lfw_state_create();
+    if (!state) {
+        fprintf(stderr,
+                "[lfw] failed to create state table\n");
+        free(rules);
+        return 1;
     }
 
     lfw_engine_t engine = {
@@ -59,30 +47,25 @@ int main(int argc, char **argv)
             .rules = rules,
             .rule_count = rule_count
         },
-        .connection_state = connection_state
+        .connection_state = state
     };
 
-    printf("[lfw] starting firewall (config: %s, rules: %u, default: %s, stateful: %s)\n",
-           config_path,
-           engine.ruleset.rule_count,
-           (engine.config.default_action == LFW_ACTION_ACCEPT) ? "ACCEPT" : "DROP",
-           connection_state ? "yes" : "no");
+    printf("[lfw] starting\n");
+    printf("[lfw] config: %s\n", config_path);
+    printf("[lfw] rules: %u\n", rule_count);
+    printf("[lfw] default: %s\n",
+            default_action == LFW_ACTION_ACCEPT ?
+            "ACCEPT" : "DROP");
 
-    // start NFQUEUE processing (blocks forever)
-    status = lfw_nfqueue_run(&engine, 0);
+    st = lfw_nfqueue_run(&engine, 0);
 
-    /* If we successfully loaded a dynamic ruleset, free it on exit.
-     * In the usual case this process will run indefinitely and this
-     * code is never reached, but it keeps things correct for tests
-     * or controlled runs.
-     */
-    if (connection_state) {
-        lfw_state_destroy(connection_state);
-    }
-    if (status == LFW_OK && rules) {
-        lfw_config_free_rules(rules);
-    }
+    lfw_state_destroy(state);
+    lfw_config_free_rules(rules);
 
-    return (status == LFW_OK) ? 0 : 1;
+    if (st != LFW_OK)
+        return 1;
+
+    printf("\n[lfw] shutdown complete\n");
+
+    return 0;
 }
-

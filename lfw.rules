@@ -1,5 +1,5 @@
 # SAMPLE RULES
-
+#
 # lfw test rules
 #
 # Syntax:
@@ -9,20 +9,26 @@
 #   PORT   : number or number/proto (e.g. 22, 22/tcp)
 #   SRC/DST: any or IPv4 address
 #
+#
 
-allow tcp from 127.0.0.1 to 127.0.0.1
 
-# Allow local web server for testing (HTTP)
-allow tcp 80
+default deny
 
-# Allow HTTPS
-allow tcp 443
-allow tcp 8081
-# deny tcp 8081
+# allow any
 
-# Allow DNS to this host (UDP 53)
-# allow udp 53
+# allow any from 127.0.0.1
+# allow any to 127.0.0.1
+# allow tcp 8081 from 127.0.0.1
 
-# Final default: deny everything else inbound
-# deny any
+allow tcp 8081 from 192.168.0.111
+
+allow 8081/tcp from 10.60.76.9
+# allow tcp 8081 from 10.60.76.9
+# allow any to 10.60.76.9
+
+deny icmp
+
+# allow tcp 8081
+deny tcp 8081
+
 

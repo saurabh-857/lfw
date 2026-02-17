@@ -1,39 +1,43 @@
-# lfw – Linux Firewall (NFQUEUE-based)
+# lfw – Linux Firewall
 
 ![Project](https://img.shields.io/badge/lfw-purple.svg)
 ![Language](https://img.shields.io/badge/C11-blue.svg)
 
 ## lfw – Linux Firewall (NFQUEUE-based)
 
-`lfw` is a simple Linux firewall daemon that reads rules from a text file (similar to ufw syntax) and enforces them using the Linux Netfilter NFQUEUE mechanism.
+`lfw` is a stateful Linux firewall daemon that intercepts packets using the Netfilter NFQUEUE mechanism and evaluates them against a human-readable ruleset.
 
 ### 1. Features
 
-- **NFQUEUE-based daemon**: inspects packets from an `iptables` NFQUEUE and decides to ACCEPT or DROP.
-- **Stateful connection tracking**: tracks established connections (5-tuple) and allows subsequent packets without re-evaluating rules, improving performance and supporting connection-oriented protocols.
-- **Human-readable rules file**: simple syntax like `allow tcp 22` or `deny any`.
-- **IPv4 + TCP/UDP/ICMP support**.
-- **Configurable rules path**: default `/etc/lfw/lfw.rules`, or custom path via CLI argument.
+* **NFQUEUE-based daemon**: Intercepts packets from `iptables` and issues ACCEPT or DROP verdicts.
+* **Stateful connection tracking**: Tracks established 5-tuple connections (Source IP, Destination IP, Source Port, Destination Port, Protocol) to bypass rule evaluation for existing sessions.
+* **Human-readable rules**: Simple syntax for managing traffic permissions.
+* **IPv4 Support**: Full support for TCP, UDP, and ICMP over IPv4.
 
 ---
 
 ### 2. Requirements
 
-- **Linux** with Netfilter / `iptables`.
-- **GCC** (or compatible C compiler).
-- **libnetfilter_queue** development headers.
-- **libpcap** development headers (only needed for the optional pcap test tool).
+To build and run `lfw`, you need the following:
 
-On Debian/Ubuntu/Kali, you can install dependencies with:
+* **Linux** with `iptables` support.
+* **GCC** with C11 support.
+* **Libraries**: `libnetfilter_queue` and `libpcap` (for the test tool).
+
+On Debian/Ubuntu:
 
 ```bash
-sudo apt update
 sudo apt install build-essential libnetfilter-queue-dev libpcap-dev
 ```
 
----
+### 3. Build & Installation
 
-### 3. Build
+Clone the repo & navigate to the `lfw` repo:
+
+```bash
+git clone https://github.com/saurabh-857/lfw.git
+cd lfw
+```
 
 From the project root:
 
@@ -58,7 +62,7 @@ make clean
 
 ---
 
-### 4. Rules file
+### 4. Configuration
 
 By default, `lfw` reads rules from:
 
@@ -88,6 +92,9 @@ Lines starting with `#` or empty lines are ignored.
 #### 4.2 Examples
 
 ```text
+# Deny by default
+default deny
+
 # Allow HTTP
 allow tcp 80
 
@@ -97,8 +104,12 @@ allow tcp 22
 # Allow DNS from a specific host
 allow 53/udp from 192.168.1.53
 
-# Deny everything else
-deny any
+# Allow to specific host or router
+allow any from 192.168.1.1
+
+# Allow ICMP
+allow icmp
+
 ```
 
 Place your rules into `/etc/lfw/lfw.rules` (or another file you pass on the command line).
@@ -136,30 +147,9 @@ sudo ./route.sh 2
 
 **Option B: Manual iptables configuration**
 
-For a simple setup that sends all incoming packets to queue `0`:
-
 ```bash
-sudo iptables -I INPUT -j NFQUEUE --queue-num 0
-```
-
-For more comprehensive filtering (including forwarded and outgoing traffic), you can use the mangle table:
-
-```bash
-sudo iptables -I PREROUTING -t mangle -j NFQUEUE --queue-num 0
-sudo iptables -I OUTPUT -t mangle -j NFQUEUE --queue-num 0
-```
-
-You can customize your `iptables` rules as you like, as long as the traffic you want filtered is sent to the same queue number that `lfw` uses (default: `0`).
-
-To remove rules later:
-
-```bash
-# Remove INPUT rule
-sudo iptables -D INPUT -j NFQUEUE --queue-num 0
-
-# Or remove mangle table rules
-sudo iptables -D PREROUTING -t mangle -j NFQUEUE --queue-num 0
-sudo iptables -D OUTPUT -t mangle -j NFQUEUE --queue-num 0
+sudo iptables -I PREROUTING -t mangle ! -i lo -j NFQUEUE --queue-num 0
+sudo iptables -I OUTPUT -t mangle ! -o lo -j NFQUEUE --queue-num 0
 ```
 
 > **Note**: On systems using `nftables` or firewalld, you may prefer to configure NFQUEUE with those tools instead of raw `iptables`.
@@ -182,40 +172,25 @@ sudo build/lfw /path/to/custom.rules
 While running, `lfw` will log decisions like:
 
 ```text
-[lfw] ALLOW tcp 192.168.1.10:54321 -> 192.168.1.2:22
-[lfw] DENY tcp 203.0.113.5:43210 -> 192.168.1.2:80
+[lfw] ALLOW in  tcp    192.168.0.101:52084 ->   192.168.0.102:8081 
+[lfw] ALLOW out tcp    192.168.0.102:8081  ->   192.168.0.101:52084
 ```
 
 Stop the daemon with `Ctrl+C`.
 
 ---
 
-### 6. Stateful filtering
+### 6. Internal Architecture
 
-`lfw` includes stateful connection tracking by default. This means:
-
-- **New connections**: When a new connection (e.g., TCP SYN packet) arrives, it is evaluated against your ruleset. If allowed, the connection is added to the state table.
-- **Established connections**: Subsequent packets belonging to an already-allowed connection are automatically accepted without re-evaluating rules, improving performance.
-- **Connection tracking**: The firewall tracks connections using a 5-tuple (source IP, destination IP, source port, destination port, protocol) with a fixed-size hash table (4096 entries).
-
-Stateful filtering works for TCP and UDP connections. ICMP packets are handled statelessly.
-
-If the connection state table cannot be allocated (e.g., out of memory), `lfw` will fall back to stateless operation and log a warning.
-
----
-
-### 7. Default policy & failure behavior
-
-- If the rules file loads successfully, the **default action** is **ACCEPT**, and traffic is evaluated against your rules.
-- If the rules file cannot be loaded, `lfw` falls back to **deny all inbound** for any packets it sees on the NFQUEUE (i.e. default action becomes DROP).
-
----
+* **Core Engine**: Orchestrates the lookup process, checking the state table before the rule list.
+* **State Table**: A hash table with 4096 entries used to track active TCP and UDP connections.
+* **Packet Parser**: Extracts L3 and L4 headers from raw NFQUEUE data.
+* **Config Loader**: Parses text-based rule files into memory.
 
 ### 8. Quick start (TL;DR)
 
 ```bash
 # 1) Install dependencies (Debian/Ubuntu/Kali)
-sudo apt update
 sudo apt install build-essential libnetfilter-queue-dev libpcap-dev
 
 # 2) Build
@@ -226,12 +201,8 @@ make
 sudo mkdir -p /etc/lfw
 sudo cp lfw.rules /etc/lfw/lfw.rules
 
-# 4) Route packets to NFQUEUE 0 (choose one method)
-# Option A: Use helper script (recommended)
+# 4) Route packets to NFQUEUE 0 (recommended: use helper script)
 sudo ./route.sh 1
-
-# Option B: Manual iptables setup
-sudo iptables -I INPUT -j NFQUEUE --queue-num 0
 
 # 5) Run the firewall daemon
 sudo build/lfw

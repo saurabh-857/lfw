@@ -1,150 +1,215 @@
 #include "lfw_state.h"
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-/*
- * Fixed-size connection state table.
- * Key = (src_ip, dst_ip, src_port, dst_port, protocol).
- */
-#define LFW_STATE_TABLE_SIZE  4096
-#define LFW_STATE_EMPTY_MARK  0xFFFFFFFFu
+// Table size (must be power of two for better distribution)
+#define LFW_STATE_TABLE_SIZE 4096
+
+// Timeouts (seconds)
+#define LFW_TCP_TIMEOUT 300
+#define LFW_UDP_TIMEOUT 60
+
+#define LFW_EMPTY_MARK 0xFFFFFFFFu
 
 typedef struct {
-    lfw_u32    src_ip;
-    lfw_u32    dst_ip;
-    lfw_u16    src_port;
-    lfw_u16    dst_port;
-    lfw_u8     protocol;
-    lfw_u8     _pad;
-} lfw_conn_key_t;
+    lfw_u32 src_ip;
+    lfw_u32 dst_ip;
+    lfw_u16 src_port;
+    lfw_u16 dst_port;
+    lfw_u8  protocol;
+    lfw_u8  _pad;
+    lfw_u64 last_seen;
+} lfw_conn_entry_t;
 
 struct lfw_state {
-    lfw_conn_key_t *slots;
-    lfw_u32         count;
-    lfw_u32         cap;
+    lfw_conn_entry_t *slots;
+    lfw_u32           cap;
+    lfw_u32           count;
 };
 
-static lfw_u32 hash_key(const lfw_conn_key_t *k)
+// ------------------------------
+// Utility
+// ------------------------------
+
+static lfw_u64 now_sec(void)
 {
-    lfw_u32 h = k->src_ip ^ k->dst_ip;
-    h ^= (lfw_u32)k->src_port << 16 | k->dst_port;
-    h ^= (lfw_u32)k->protocol << 24;
+    return (lfw_u64)time(NULL);
+}
+
+static void entry_set_empty(lfw_conn_entry_t *e)
+{
+    e->src_ip = LFW_EMPTY_MARK;
+    e->dst_ip = LFW_EMPTY_MARK;
+}
+
+static bool entry_is_empty(const lfw_conn_entry_t *e)
+{
+    return (e->src_ip == LFW_EMPTY_MARK &&
+            e->dst_ip == LFW_EMPTY_MARK);
+}
+
+// Normalize connection tuple for bidirectional matching
+static void normalize_key(const lfw_packet_t *pkt, lfw_conn_entry_t *e)
+{
+    lfw_u32 a_ip   = pkt->ip4.src.addr;
+    lfw_u32 b_ip   = pkt->ip4.dst.addr;
+    lfw_u16 a_port = pkt->l4.src_port.port;
+    lfw_u16 b_port = pkt->l4.dst_port.port;
+
+    // Deterministic ordering
+    if (a_ip < b_ip || (a_ip == b_ip && a_port <= b_port)) {
+        e->src_ip   = a_ip;
+        e->dst_ip   = b_ip;
+        e->src_port = a_port;
+        e->dst_port = b_port;
+    } else {
+        e->src_ip   = b_ip;
+        e->dst_ip   = a_ip;
+        e->src_port = b_port;
+        e->dst_port = a_port;
+    }
+
+    e->protocol = (lfw_u8)pkt->protocol;
+}
+
+static lfw_u32 hash_entry(const lfw_conn_entry_t *e)
+{
+    lfw_u32 h = e->src_ip ^ e->dst_ip;
+    h ^= ((lfw_u32)e->src_port << 16) | e->dst_port;
+    h ^= ((lfw_u32)e->protocol << 24);
     return h;
 }
 
-static void key_from_packet(const lfw_packet_t *pkt, lfw_conn_key_t *k)
+static bool entry_equal(const lfw_conn_entry_t *a,
+                        const lfw_conn_entry_t *b)
 {
-    k->src_ip    = pkt->ip4.src.addr;
-    k->dst_ip    = pkt->ip4.dst.addr;
-    k->src_port  = pkt->l4.src_port.port;
-    k->dst_port  = pkt->l4.dst_port.port;
-    k->protocol  = (lfw_u8)pkt->protocol;
-    k->_pad      = 0;
+    return a->src_ip   == b->src_ip   &&
+            a->dst_ip   == b->dst_ip   &&
+            a->src_port == b->src_port &&
+            a->dst_port == b->dst_port &&
+            a->protocol == b->protocol;
 }
 
-static bool key_equal(const lfw_conn_key_t *a, const lfw_conn_key_t *b)
+static bool entry_expired(const lfw_conn_entry_t *e, lfw_u64 now)
 {
-    return a->src_ip == b->src_ip
-        && a->dst_ip == b->dst_ip
-        && a->src_port == b->src_port
-        && a->dst_port == b->dst_port
-        && a->protocol == b->protocol;
+    if (e->protocol == LFW_PROTO_TCP)
+        return (now - e->last_seen) > LFW_TCP_TIMEOUT;
+
+    if (e->protocol == LFW_PROTO_UDP)
+        return (now - e->last_seen) > LFW_UDP_TIMEOUT;
+
+    return true;
 }
 
-static bool key_is_empty(const lfw_conn_key_t *k)
-{
-    return k->src_ip == LFW_STATE_EMPTY_MARK && k->dst_ip == LFW_STATE_EMPTY_MARK;
-}
-
-static void key_set_empty(lfw_conn_key_t *k)
-{
-    k->src_ip   = LFW_STATE_EMPTY_MARK;
-    k->dst_ip   = LFW_STATE_EMPTY_MARK;
-    k->src_port = 0;
-    k->dst_port = 0;
-    k->protocol = 0;
-}
+// ------------------------------
+// Public API
+// ------------------------------
 
 lfw_state_t *lfw_state_create(void)
 {
-    lfw_state_t *s = (lfw_state_t *)malloc(sizeof(lfw_state_t));
-    if (!s) {
+    lfw_state_t *s = malloc(sizeof(*s));
+    if (!s)
         return NULL;
-    }
+
     s->cap   = LFW_STATE_TABLE_SIZE;
     s->count = 0;
-    s->slots = (lfw_conn_key_t *)calloc(s->cap, sizeof(lfw_conn_key_t));
+    s->slots = calloc(s->cap, sizeof(lfw_conn_entry_t));
     if (!s->slots) {
         free(s);
         return NULL;
     }
-    for (lfw_u32 i = 0; i < s->cap; i++) {
-        key_set_empty(&s->slots[i]);
-    }
+
+    for (lfw_u32 i = 0; i < s->cap; i++)
+        entry_set_empty(&s->slots[i]);
+
     return s;
 }
 
 void lfw_state_destroy(lfw_state_t *state)
 {
-    if (!state) {
+    if (!state)
         return;
-    }
+
     free(state->slots);
     free(state);
 }
 
-bool lfw_state_established(const lfw_state_t *state, const lfw_packet_t *packet)
+bool lfw_state_established(lfw_state_t *state,
+                            const lfw_packet_t *packet)
 {
-    if (!state || !packet) {
+    if (!state || !packet)
         return false;
-    }
-    if (packet->protocol != LFW_PROTO_TCP && packet->protocol != LFW_PROTO_UDP) {
+
+    if (packet->protocol != LFW_PROTO_TCP &&
+        packet->protocol != LFW_PROTO_UDP)
         return false;
-    }
 
-    lfw_conn_key_t key;
-    key_from_packet(packet, &key);
+    lfw_conn_entry_t key = {0};
+    normalize_key(packet, &key);
 
-    lfw_u32 idx = hash_key(&key) % state->cap;
-    for (lfw_u32 n = 0; n < state->cap; n++) {
-        lfw_conn_key_t *slot = &state->slots[idx];
-        if (key_is_empty(slot)) {
+    lfw_u32 idx = hash_entry(&key) % state->cap;
+    lfw_u64 now = now_sec();
+
+    for (lfw_u32 i = 0; i < state->cap; i++) {
+
+        lfw_conn_entry_t *slot = &state->slots[idx];
+
+        if (entry_is_empty(slot))
+            return false;
+
+        // Remove expired entries lazily
+        if (entry_expired(slot, now)) {
+            entry_set_empty(slot);
+            state->count--;
             return false;
         }
-        if (key_equal(slot, &key)) {
+
+        if (entry_equal(slot, &key)) {
+            slot->last_seen = now; // refresh activity
             return true;
         }
+
         idx = (idx + 1) % state->cap;
     }
+
     return false;
 }
 
-void lfw_state_add(lfw_state_t *state, const lfw_packet_t *packet)
+void lfw_state_add(lfw_state_t *state,
+                    const lfw_packet_t *packet)
 {
-    if (!state || !packet) {
+    if (!state || !packet)
         return;
-    }
-    if (packet->protocol != LFW_PROTO_TCP && packet->protocol != LFW_PROTO_UDP) {
+
+    if (packet->protocol != LFW_PROTO_TCP &&
+        packet->protocol != LFW_PROTO_UDP)
         return;
-    }
-    if (state->count >= state->cap) {
-        return; /* table full */
-    }
 
-    lfw_conn_key_t key;
-    key_from_packet(packet, &key);
+    if (state->count >= state->cap)
+        return;
 
-    lfw_u32 idx = hash_key(&key) % state->cap;
-    for (lfw_u32 n = 0; n < state->cap; n++) {
-        lfw_conn_key_t *slot = &state->slots[idx];
-        if (key_is_empty(slot)) {
+    lfw_conn_entry_t key = {0};
+    normalize_key(packet, &key);
+    key.last_seen = now_sec();
+
+    lfw_u32 idx = hash_entry(&key) % state->cap;
+
+    for (lfw_u32 i = 0; i < state->cap; i++) {
+
+        lfw_conn_entry_t *slot = &state->slots[idx];
+
+        if (entry_is_empty(slot)) {
             *slot = key;
             state->count++;
             return;
         }
-        if (key_equal(slot, &key)) {
-            return; /* already present */
+
+        if (entry_equal(slot, &key)) {
+            slot->last_seen = key.last_seen;
+            return;
         }
+
         idx = (idx + 1) % state->cap;
     }
 }
