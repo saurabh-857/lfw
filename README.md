@@ -3,20 +3,18 @@
 ![Project](https://img.shields.io/badge/lfw-purple.svg)
 ![Language](https://img.shields.io/badge/C11-blue.svg)
 
-## lfw – Linux Firewall (NFQUEUE-based)
-
 `lfw` is a stateful Linux firewall daemon that intercepts packets using the Netfilter NFQUEUE mechanism and evaluates them against a human-readable ruleset.
 
-### 1. Features
+
+## 1. Features
 
 * **NFQUEUE-based daemon**: Intercepts packets from `iptables` and issues ACCEPT or DROP verdicts.
 * **Stateful connection tracking**: Tracks established 5-tuple connections (Source IP, Destination IP, Source Port, Destination Port, Protocol) to bypass rule evaluation for existing sessions.
 * **Human-readable rules**: Simple syntax for managing traffic permissions.
 * **IPv4 Support**: Full support for TCP, UDP, and ICMP over IPv4.
 
----
 
-### 2. Requirements
+## 2. Requirements
 
 To build and run `lfw`, you need the following:
 
@@ -30,7 +28,8 @@ On Debian/Ubuntu:
 sudo apt install build-essential libnetfilter-queue-dev libpcap-dev
 ```
 
-### 3. Build & Installation
+
+## 3. Build & Installation
 
 Clone the repo & navigate to the `lfw` repo:
 
@@ -60,9 +59,8 @@ To clean:
 make clean
 ```
 
----
 
-### 4. Configuration
+## 4. Configuration
 
 By default, `lfw` reads rules from:
 
@@ -74,7 +72,7 @@ You can also pass a custom rules file path as the first CLI argument:
 sudo build/lfw /path/to/custom.rules
 ```
 
-#### 4.1 Syntax
+### 4.1 Syntax
 
 One rule per line:
 
@@ -89,7 +87,7 @@ ACTION [PROTO] [PORT] [from SRC] [to DST]
 
 Lines starting with `#` or empty lines are ignored.
 
-#### 4.2 Examples
+### 4.2 Examples
 
 ```text
 # Deny by default
@@ -109,16 +107,14 @@ allow any from 192.168.1.1
 
 # Allow ICMP
 allow icmp
-
 ```
 
 Place your rules into `/etc/lfw/lfw.rules` (or another file you pass on the command line).
 
----
 
-### 5. Running the firewall
+## 5. Running the firewall
 
-#### 5.1 Prepare the rules file
+### 5.1 Prepare the rules file
 
 Create the directory and copy your rules:
 
@@ -129,32 +125,7 @@ sudo cp lfw.rules /etc/lfw/lfw.rules
 
 Edit `/etc/lfw/lfw.rules` as needed (see examples above).
 
-#### 5.2 Configure iptables NFQUEUE
-
-`lfw` expects packets to be delivered via an NFQUEUE. You can configure this manually or use the provided helper script.
-
-**Option A: Using the helper script**
-
-A `route.sh` script is provided to simplify iptables NFQUEUE setup:
-
-```bash
-# Add NFQUEUE rules (uses mangle table for PREROUTING and OUTPUT)
-sudo ./route.sh 1
-
-# Remove NFQUEUE rules
-sudo ./route.sh 2
-```
-
-**Option B: Manual iptables configuration**
-
-```bash
-sudo iptables -I PREROUTING -t mangle ! -i lo -j NFQUEUE --queue-num 0
-sudo iptables -I OUTPUT -t mangle ! -o lo -j NFQUEUE --queue-num 0
-```
-
-> **Note**: On systems using `nftables` or firewalld, you may prefer to configure NFQUEUE with those tools instead of raw `iptables`.
-
-#### 5.3 Start the daemon
+### 5.2 Start the daemon
 
 Run `lfw` as root (or with sufficient capabilities) so it can interact with Netfilter:
 
@@ -178,16 +149,16 @@ While running, `lfw` will log decisions like:
 
 Stop the daemon with `Ctrl+C`.
 
----
 
-### 6. Internal Architecture
+## 6. Internal Architecture
 
 * **Core Engine**: Orchestrates the lookup process, checking the state table before the rule list.
 * **State Table**: A hash table with 4096 entries used to track active TCP and UDP connections.
 * **Packet Parser**: Extracts L3 and L4 headers from raw NFQUEUE data.
 * **Config Loader**: Parses text-based rule files into memory.
 
-### 8. Quick start (TL;DR)
+
+## 7. Quick start (TL;DR)
 
 ```bash
 # 1) Install dependencies (Debian/Ubuntu/Kali)
@@ -201,10 +172,7 @@ make
 sudo mkdir -p /etc/lfw
 sudo cp lfw.rules /etc/lfw/lfw.rules
 
-# 4) Route packets to NFQUEUE 0 (recommended: use helper script)
-sudo ./route.sh 1
-
-# 5) Run the firewall daemon
+# 4) Run the firewall daemon
 sudo build/lfw
 ```
 

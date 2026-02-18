@@ -1,13 +1,59 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
 
 #include "lfw_config.h"
 #include "lfw_engine.h"
 #include "lfw_nfqueue.h"
 #include "lfw_state.h"
 
+static int rules_installed = 0;
+
+static void add_iptables_rules()
+{
+    system("iptables -I PREROUTING -t mangle ! -i lo -j NFQUEUE --queue-num 0");
+    system("iptables -I OUTPUT -t mangle ! -o lo -j NFQUEUE --queue-num 0");
+
+    rules_installed = 1;
+}
+
+static void remove_iptables_rules()
+{
+    if (!rules_installed)
+        return;
+
+    system("iptables -D PREROUTING -t mangle ! -i lo -j NFQUEUE --queue-num 0");
+    system("iptables -D OUTPUT -t mangle ! -o lo -j NFQUEUE --queue-num 0");
+
+    rules_installed = 0;
+}
+
+static void cleanup()
+{
+    printf("[lfw] removing iptables rules...\n");
+    remove_iptables_rules();
+}
+
+static void signal_handler(int sig)
+{
+    (void)sig;
+    exit(0);  // triggers atexit cleanup
+}
+
 int main(int argc, char **argv)
 {
+    // Root privilege check
+    if (geteuid() != 0) {
+        fprintf(stderr, "[lfw] run as root\n");
+        return 1;
+    }
+
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    atexit(cleanup);
+
     const char *config_path = "/etc/lfw/lfw.rules";
 
     if (argc > 1)
@@ -50,6 +96,9 @@ int main(int argc, char **argv)
         .connection_state = state
     };
 
+    printf("[lfw] inserting iptables rules...\n");
+    add_iptables_rules();
+
     printf("[lfw] starting\n");
     printf("[lfw] config: %s\n", config_path);
     printf("[lfw] rules: %u\n", rule_count);
@@ -69,3 +118,4 @@ int main(int argc, char **argv)
 
     return 0;
 }
+
