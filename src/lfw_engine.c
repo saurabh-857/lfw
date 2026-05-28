@@ -51,10 +51,9 @@ lfw_verdict_t lfw_engine_evaluate(
         __sync_fetch_and_add(&rule->hit_count, 1);
         __sync_fetch_and_add(&rule->byte_count, packet->length);
 
-        // If accepting a new connection, add to state table
+        // If accepting, add to state table (state_add handles TCP/UDP check)
         if (verdict == LFW_VERDICT_ACCEPT &&
-            engine->connection_state &&
-            packet->is_new_connection)
+            engine->connection_state)
         {
             lfw_state_add(engine->connection_state, packet);
         }
@@ -66,8 +65,7 @@ lfw_verdict_t lfw_engine_evaluate(
         verdict = action_to_verdict(engine->config.default_action);
 
         if (verdict == LFW_VERDICT_ACCEPT &&
-            engine->connection_state &&
-            packet->is_new_connection)
+            engine->connection_state)
         {
             lfw_state_add(engine->connection_state, packet);
         }

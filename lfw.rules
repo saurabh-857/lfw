@@ -1,5 +1,5 @@
 # =====================================================================
-# lfw - Enterprise Firewall Ruleset (lfw.rules)
+# lfw - Testable Firewall Ruleset (lfw.rules)
 # =====================================================================
 # Syntax:
 #   ACTION [PROTO] [PORT] [from SRC] [to DST]
@@ -10,43 +10,53 @@
 #   SRC/DST : any | IPv4 Address (e.g. 1.1.1.1) | CIDR Subnet (e.g. 192.168.1.0/24)
 # =====================================================================
 
-# 1. DEFAULT SECURITY POLICY (Fail-Closed Posture)
+# DEFAULT SECURITY POLICY (Fail-Closed)
 default deny
 
+# ---------------------------------------------------------------------
+# TEST CASE 1: ICMP (Ping)
+# Note: Since the firewall's state table only tracks TCP/UDP flows,
+# stateless ICMP rules must be bidirectional to allow replies.
+# ---------------------------------------------------------------------
+# ALLOW ping to/from 8.8.8.8
+# DENY ping to/from 1.1.1.1
+# Test commands:
+#   ping -c 3 -4 8.8.8.8   (Should SUCCEED with responses)
+#   ping -c 3 -4 1.1.1.1   (Should FAIL / 100% packet loss)
+allow icmp to 8.8.8.8/32
+allow icmp from 8.8.8.8/32
+deny icmp to 1.1.1.1/32
+deny icmp from 1.1.1.1/32
 
-# 2. INBOUND MANAGEMENT (SSH)
-# Only permit SSH (port 22) administration from the secure internal management subnet
-allow tcp 22 from 192.168.1.0/24 to any
-
-
-# 3. OUTBOUND INFRASTRUCTURE SERVICES
-# Allow DNS resolution (port 53 and port 853 DoT) only to trusted secure public DNS resolvers
-allow udp 53 to 1.1.1.1/32
+# ---------------------------------------------------------------------
+# TEST CASE 2: DNS Resolution (UDP 53)
+# ---------------------------------------------------------------------
+# ALLOW DNS queries to 8.8.8.8 (State tracking handles the inbound replies)
+# DENY DNS queries to 1.1.1.1
+# Test commands:
+#   dig @8.8.8.8 google.com   (Should SUCCEED)
+#   dig @1.1.1.1 google.com   (Should FAIL / Timeout)
 allow udp 53 to 8.8.8.8/32
-allow tcp 53 to 1.1.1.1/32
-allow tcp 53 to 8.8.8.8/32
-allow tcp 853 to 1.1.1.1/32
-allow tcp 853 to 8.8.8.8/32
+deny udp 53 to 1.1.1.1/32
 
-# Allow NTP (port 123) for time synchronization with local network pool
-allow udp 123 from any to 10.0.0.0/8
-
-
-# 4. OUTBOUND WEB TRAFFIC (Updates, Packages, APIs)
-# Allow HTTP/HTTPS updates and API communication to any external host
-allow tcp 80 to any
+# ---------------------------------------------------------------------
+# TEST CASE 3: HTTP/HTTPS Web Traffic (TCP 80 / 443)
+# ---------------------------------------------------------------------
+# ALLOW secure web traffic (HTTPS port 443) to any host
+# DENY insecure web traffic (HTTP port 80) to any host
+# Test commands:
+#   curl -I -4 --connect-timeout 5 https://www.google.com  (Should SUCCEED)
+#   curl -I -4 --connect-timeout 5 http://www.google.com   (Should FAIL / Timeout)
 allow tcp 443 to any
+deny tcp 80 to any
 
-
-# 5. INTERNAL ZONE SEGREGATION (DMZ & Database isolation)
-# Allow the web server subnet (10.0.1.0/24) to connect to the database subnet (10.0.2.0/24) on PostgreSQL (5432)
-allow tcp 5432 from 10.0.1.0/24 to 10.0.2.0/24
-
-# Deny all other cross-zone traffic between database zones and untrusted zones
-deny any from 10.0.2.0/24 to any
-
-
-# 6. DIAGNOSTICS
-# Permit ICMP (ping, trace) within the enterprise network for network debugging
-allow icmp from 10.0.0.0/8 to 10.0.0.0/8
-deny icmp
+# ---------------------------------------------------------------------
+# TEST CASE 4: SSH Outbound Management (TCP 22)
+# ---------------------------------------------------------------------
+# ALLOW SSH connection to a dummy local address (e.g. 192.168.10.10)
+# DENY SSH to all other addresses
+# Test commands:
+#   ssh -o ConnectTimeout=5 192.168.10.10   (Will try to connect, won't be blocked by firewall)
+#   ssh -o ConnectTimeout=5 192.168.10.11   (Will fail immediately / firewall drop)
+allow tcp 22 to 192.168.10.10/32
+deny tcp 22 to any
