@@ -294,7 +294,7 @@ static __attribute__((noinline)) int do_ipv4_filter(struct __sk_buff *skb, struc
     for (int i = 0; i < 4; i++) {
         __u64 mask_val = intersected.bits[i];
         #pragma clang loop unroll(disable)
-        for (int j = 0; j < 64; j++) {
+        for (int j = 0; j < 16; j++) {
             if (mask_val == 0) break;
             int bit_idx = __builtin_ctzll(mask_val);
             __u32 rule_idx = i * 64 + bit_idx;
@@ -388,61 +388,57 @@ static __attribute__((noinline)) int do_ipv6_filter(struct __sk_buff *skb, struc
     __be16 dst_port = 0;
     __u8 tcp_syn = 0, tcp_ack = 0, tcp_fin = 0, tcp_rst = 0;
 
-    if (proto == 0 || proto == 43 || proto == 60 || proto == 44 || proto == 51) {
-        __u8 *ext = (void *)(ip6 + 1);
-        if ((void *)(ext + 2) > data_end)
-            return TC_ACT_OK;
-        lfw_proto = ext[0];
+    __u32 ip_hdr_len = 40;
+    #pragma clang loop unroll(disable)
+    for (int i = 0; i < 5; i++) {
+        if (proto == 0 || proto == 43 || proto == 60 || proto == 44 || proto == 51) {
+            if (ip_hdr_len > 256)
+                return TC_ACT_OK;
 
-        __u32 ext_len = 8;
-        if (proto == 0 || proto == 43 || proto == 60) {
-            ext_len = (ext[1] + 1) * 8;
-        } else if (proto == 51) {
-            ext_len = (ext[1] + 2) * 4;
-        }
+            __u8 *ext = (void *)((__u8 *)ip6 + ip_hdr_len);
+            if ((void *)(ext + 2) > data_end)
+                return TC_ACT_OK;
 
-        if ((void *)(ext + ext_len) > data_end)
-            return TC_ACT_OK;
-
-        if (ext_len == 8) {
-            if (lfw_proto == IPPROTO_TCP) {
-                struct tcphdr *tcp = (void *)((__u8 *)ip6 + 48);
-                if ((void *)(tcp + 1) > data_end)
-                    return TC_ACT_OK;
-                src_port = tcp->source;
-                dst_port = tcp->dest;
-                __u8 tcp_flags = ((__u8 *)tcp)[13];
-                tcp_syn = (tcp_flags & 0x02) != 0;
-                tcp_ack = (tcp_flags & 0x10) != 0;
-                tcp_fin = (tcp_flags & 0x01) != 0;
-                tcp_rst = (tcp_flags & 0x04) != 0;
-            } else if (lfw_proto == IPPROTO_UDP) {
-                struct udphdr *udp = (void *)((__u8 *)ip6 + 48);
-                if ((void *)(udp + 1) > data_end)
-                    return TC_ACT_OK;
-                src_port = udp->source;
-                dst_port = udp->dest;
+            __u8 next_proto = ext[0];
+            __u32 ext_len = 8;
+            if (proto == 0 || proto == 43 || proto == 60) {
+                ext_len = (ext[1] + 1) * 8;
+            } else if (proto == 51) {
+                ext_len = (ext[1] + 2) * 4;
             }
-        }
-    } else {
-        if (proto == IPPROTO_TCP) {
-            struct tcphdr *tcp = (void *)(ip6 + 1);
-            if ((void *)(tcp + 1) > data_end)
+
+            if ((void *)(ext + ext_len) > data_end)
                 return TC_ACT_OK;
-            src_port = tcp->source;
-            dst_port = tcp->dest;
-            __u8 tcp_flags = ((__u8 *)tcp)[13];
-            tcp_syn = (tcp_flags & 0x02) != 0;
-            tcp_ack = (tcp_flags & 0x10) != 0;
-            tcp_fin = (tcp_flags & 0x01) != 0;
-            tcp_rst = (tcp_flags & 0x04) != 0;
-        } else if (proto == IPPROTO_UDP) {
-            struct udphdr *udp = (void *)(ip6 + 1);
-            if ((void *)(udp + 1) > data_end)
-                return TC_ACT_OK;
-            src_port = udp->source;
-            dst_port = udp->dest;
+
+            ip_hdr_len += ext_len;
+            proto = next_proto;
+            lfw_proto = next_proto;
+        } else {
+            break;
         }
+    }
+
+    if (lfw_proto == IPPROTO_TCP) {
+        if (ip_hdr_len > 256)
+            return TC_ACT_OK;
+        struct tcphdr *tcp = (void *)((__u8 *)ip6 + ip_hdr_len);
+        if ((void *)(tcp + 1) > data_end)
+            return TC_ACT_OK;
+        src_port = tcp->source;
+        dst_port = tcp->dest;
+        __u8 tcp_flags = ((__u8 *)tcp)[13];
+        tcp_syn = (tcp_flags & 0x02) != 0;
+        tcp_ack = (tcp_flags & 0x10) != 0;
+        tcp_fin = (tcp_flags & 0x01) != 0;
+        tcp_rst = (tcp_flags & 0x04) != 0;
+    } else if (lfw_proto == IPPROTO_UDP) {
+        if (ip_hdr_len > 256)
+            return TC_ACT_OK;
+        struct udphdr *udp = (void *)((__u8 *)ip6 + ip_hdr_len);
+        if ((void *)(udp + 1) > data_end)
+            return TC_ACT_OK;
+        src_port = udp->source;
+        dst_port = udp->dest;
     }    // Conntrack
     __u8 conntrack_found = 0;
     __u64 now = bpf_ktime_get_ns();
@@ -587,7 +583,7 @@ static __attribute__((noinline)) int do_ipv6_filter(struct __sk_buff *skb, struc
     for (int i = 0; i < 4; i++) {
         __u64 mask_val = intersected.bits[i];
         #pragma clang loop unroll(disable)
-        for (int j = 0; j < 64; j++) {
+        for (int j = 0; j < 16; j++) {
             if (mask_val == 0) break;
             int bit_idx = __builtin_ctzll(mask_val);
             __u32 rule_idx = i * 64 + bit_idx;

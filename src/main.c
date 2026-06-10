@@ -188,6 +188,10 @@ static void *conntrack_gc_loop(void *arg) {
     // IPv4 GC
     int fd = lfw_bpf_get_conntrack_map_fd();
     if (fd >= 0) {
+      struct conntrack_key *delete_keys = NULL;
+      size_t delete_count = 0;
+      size_t delete_cap = 0;
+
       struct conntrack_key key = {}, next_key = {};
       struct conntrack_val val = {};
       int has_more = bpf_map_get_next_key(fd, NULL, &next_key) == 0;
@@ -210,15 +214,34 @@ static void *conntrack_gc_loop(void *arg) {
               timeout = TCP_TIMEOUT_ESTABLISHED_NS;
           }
           if (adjusted_now > (int64_t)val.last_seen && adjusted_now - (int64_t)val.last_seen > (int64_t)timeout) {
-            bpf_map_delete_elem(fd, &key);
+            if (delete_count >= delete_cap) {
+              size_t new_cap = delete_cap == 0 ? 256 : delete_cap * 2;
+              struct conntrack_key *tmp = realloc(delete_keys, new_cap * sizeof(struct conntrack_key));
+              if (tmp) {
+                delete_keys = tmp;
+                delete_cap = new_cap;
+              } else {
+                break;
+              }
+            }
+            delete_keys[delete_count++] = key;
           }
         }
       }
+
+      for (size_t i = 0; i < delete_count; i++) {
+        bpf_map_delete_elem(fd, &delete_keys[i]);
+      }
+      free(delete_keys);
     }
 
     // IPv6 GC
     int fd_v6 = lfw_bpf_get_conntrack_map_v6_fd();
     if (fd_v6 >= 0) {
+      struct conntrack_key_v6 *delete_keys_v6 = NULL;
+      size_t delete_count_v6 = 0;
+      size_t delete_cap_v6 = 0;
+
       struct conntrack_key_v6 key = {}, next_key = {};
       struct conntrack_val val = {};
       int has_more = bpf_map_get_next_key(fd_v6, NULL, &next_key) == 0;
@@ -241,10 +264,25 @@ static void *conntrack_gc_loop(void *arg) {
               timeout = TCP_TIMEOUT_ESTABLISHED_NS;
           }
           if (adjusted_now > (int64_t)val.last_seen && adjusted_now - (int64_t)val.last_seen > (int64_t)timeout) {
-            bpf_map_delete_elem(fd_v6, &key);
+            if (delete_count_v6 >= delete_cap_v6) {
+              size_t new_cap = delete_cap_v6 == 0 ? 256 : delete_cap_v6 * 2;
+              struct conntrack_key_v6 *tmp = realloc(delete_keys_v6, new_cap * sizeof(struct conntrack_key_v6));
+              if (tmp) {
+                delete_keys_v6 = tmp;
+                delete_cap_v6 = new_cap;
+              } else {
+                break;
+              }
+            }
+            delete_keys_v6[delete_count_v6++] = key;
           }
         }
       }
+
+      for (size_t i = 0; i < delete_count_v6; i++) {
+        bpf_map_delete_elem(fd_v6, &delete_keys_v6[i]);
+      }
+      free(delete_keys_v6);
     }
   }
   return NULL;

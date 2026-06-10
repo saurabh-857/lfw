@@ -315,11 +315,44 @@ void lfw_state_cleanup(lfw_state_t *state)
 
     pthread_mutex_lock(&state->lock);
 
+    lfw_u32 tombstones = 0;
     for (lfw_u32 i = 0; i < state->cap; i++) {
         lfw_conn_entry_t *slot = &state->slots[i];
-        if (slot->state == SLOT_OCCUPIED && entry_expired(slot, now)) {
-            slot->state = SLOT_TOMBSTONE;
-            state->count--;
+        if (slot->state == SLOT_OCCUPIED) {
+            if (entry_expired(slot, now)) {
+                slot->state = SLOT_TOMBSTONE;
+                state->count--;
+            }
+        }
+        if (slot->state == SLOT_TOMBSTONE) {
+            tombstones++;
+        }
+    }
+
+    // Rebuild hash table if tombstones exceed 25% of capacity to prevent linear probing degradation
+    if (tombstones > state->cap / 4) {
+        lfw_conn_entry_t *new_slots = calloc(state->cap, sizeof(lfw_conn_entry_t));
+        if (new_slots) {
+            for (lfw_u32 i = 0; i < state->cap; i++) {
+                entry_set_empty(&new_slots[i]);
+            }
+
+            lfw_u32 new_count = 0;
+            for (lfw_u32 i = 0; i < state->cap; i++) {
+                if (state->slots[i].state == SLOT_OCCUPIED) {
+                    lfw_conn_entry_t entry = state->slots[i];
+                    lfw_u32 idx = hash_entry(&entry) % state->cap;
+                    while (new_slots[idx].state == SLOT_OCCUPIED) {
+                        idx = (idx + 1) % state->cap;
+                    }
+                    new_slots[idx] = entry;
+                    new_count++;
+                }
+            }
+
+            free(state->slots);
+            state->slots = new_slots;
+            state->count = new_count;
         }
     }
 
