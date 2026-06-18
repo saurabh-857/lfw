@@ -99,15 +99,9 @@ install: lfw bpf
 	cp $(BPF_OBJ) /usr/local/share/lfw/lfw_bpf.o
 	if [ ! -f /etc/lfw/lfw.rules ]; then cp lfw.rules /etc/lfw/lfw.rules; fi
 	cp lfw@.service /etc/systemd/system/lfw@.service
-	if [ -d /etc/NetworkManager/dispatcher.d ]; then \
-		cp tools/99-lfw-dispatcher /etc/NetworkManager/dispatcher.d/99-lfw-dispatcher; \
-		chmod +x /etc/NetworkManager/dispatcher.d/99-lfw-dispatcher; \
-		chown root:root /etc/NetworkManager/dispatcher.d/99-lfw-dispatcher; \
-		mkdir -p /etc/NetworkManager/dispatcher.d/pre-up.d; \
-		ln -sf ../99-lfw-dispatcher /etc/NetworkManager/dispatcher.d/pre-up.d/99-lfw-dispatcher; \
-	fi
 	systemctl daemon-reload
 	rm -f /etc/lfw/interfaces.enabled/*
+
 	# Automatically enable firewall for active network interfaces and loopback
 	for dev in /sys/class/net/*; do \
 		if [ -d "$$dev/device" ] || [ "$$(basename "$$dev")" = "lo" ]; then \
