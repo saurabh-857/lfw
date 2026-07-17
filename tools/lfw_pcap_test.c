@@ -54,10 +54,12 @@ int main(int argc, char **argv)
     }
 
     /* Try to load rules from the external config file (same logic as main.c). */
+    lfw_loglevel_t dummy_loglevel = LFW_LOG_OPTIMAL;
     status = lfw_config_load_file(config_path,
                                   &default_action,
                                   &rules,
-                                  &rule_count);
+                                  &rule_count,
+                                  &dummy_loglevel);
 
     if (status != LFW_OK) {
         fprintf(stderr,

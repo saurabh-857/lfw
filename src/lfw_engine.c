@@ -87,12 +87,14 @@ lfw_status_t lfw_engine_reload_rules(lfw_engine_t *engine)
     lfw_rule_t *new_rules = NULL;
     lfw_u32 new_rule_count = 0;
     lfw_action_t new_default_action = LFW_ACTION_DROP;
+    lfw_loglevel_t dummy_loglevel = LFW_LOG_OPTIMAL;
 
     lfw_status_t st = lfw_config_load_file(
         engine->config_path,
         &new_default_action,
         &new_rules,
-        &new_rule_count
+        &new_rule_count,
+        &dummy_loglevel
     );
 
     if (st != LFW_OK) {

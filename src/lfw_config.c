@@ -229,6 +229,7 @@ static bool parse_port_proto(const char *text,
 
 static lfw_status_t parse_rule_line(char *line,
                                     lfw_action_t *default_action,
+                                    lfw_loglevel_t *loglevel,
                                     lfw_rule_t *out_rule,
                                     bool *is_rule)
 {
@@ -255,6 +256,26 @@ static lfw_status_t parse_rule_line(char *line,
             *default_action = LFW_ACTION_ACCEPT;
         else if (strcasecmp(policy, "deny") == 0)
             *default_action = LFW_ACTION_DROP;
+        else
+            return LFW_ERR_INVALID;
+
+        return LFW_OK;
+    }
+
+    // Handle loglevel keyword
+    if (strcasecmp(tok, "loglevel") == 0) {
+        char *level_str = strtok(NULL, " \t\r\n");
+        if (!level_str)
+            return LFW_ERR_INVALID;
+
+        if (strcasecmp(level_str, "minimal") == 0)
+            *loglevel = LFW_LOG_MINIMAL;
+        else if (strcasecmp(level_str, "optimal") == 0)
+            *loglevel = LFW_LOG_OPTIMAL;
+        else if (strcasecmp(level_str, "max") == 0)
+            *loglevel = LFW_LOG_MAX;
+        else if (strcasecmp(level_str, "super_max") == 0)
+            *loglevel = LFW_LOG_SUPER_MAX;
         else
             return LFW_ERR_INVALID;
 
@@ -391,9 +412,10 @@ static lfw_status_t parse_rule_line(char *line,
 // ------------------------------
 
 lfw_status_t lfw_config_load_file(const char *path,
-                                lfw_action_t *default_action,
-                                lfw_rule_t **rules_out,
-                                lfw_u32 *rule_count_out)
+                                  lfw_action_t *default_action,
+                                  lfw_rule_t **rules_out,
+                                  lfw_u32 *rule_count_out,
+                                  lfw_loglevel_t *loglevel_out)
 {
     FILE *fp;
     char line[256];
@@ -403,7 +425,7 @@ lfw_status_t lfw_config_load_file(const char *path,
     unsigned int line_no = 0;
 
     if (!path || !default_action ||
-        !rules_out || !rule_count_out)
+        !rules_out || !rule_count_out || !loglevel_out)
         return LFW_ERR_INVALID;
 
     fp = fopen(path, "r");
@@ -411,6 +433,7 @@ lfw_status_t lfw_config_load_file(const char *path,
         return LFW_ERR_INVALID;
 
     *default_action = LFW_ACTION_DROP;
+    *loglevel_out = LFW_LOG_OPTIMAL;
 
     while (fgets(line, sizeof(line), fp)) {
 
@@ -422,6 +445,7 @@ lfw_status_t lfw_config_load_file(const char *path,
         lfw_status_t st = parse_rule_line(
             line,
             default_action,
+            loglevel_out,
             &rule,
             &is_rule
         );

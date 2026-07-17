@@ -35,6 +35,9 @@ static lfw_u32 g_rule_count = 0;
 static lfw_action_t g_default_action = LFW_ACTION_DROP;
 static char g_config_path[256] = "/etc/lfw/lfw.rules";
 
+static bool g_cli_loglevel_override = false;
+static lfw_loglevel_t g_cli_loglevel = LFW_LOG_OPTIMAL;
+
 static pthread_t g_gc_thread;
 static bool g_gc_running = false;
 
@@ -185,6 +188,8 @@ static void *conntrack_gc_loop(void *arg) {
 
     int64_t adjusted_now = (int64_t)now_u - offset;
 
+    lfw_log_debug("GC loop: Starting connection tracking sweep...");
+
     // IPv4 GC
     int fd = lfw_bpf_get_conntrack_map_fd();
     if (fd >= 0) {
@@ -232,6 +237,7 @@ static void *conntrack_gc_loop(void *arg) {
       for (size_t i = 0; i < delete_count; i++) {
         bpf_map_delete_elem(fd, &delete_keys[i]);
       }
+      lfw_log_debug("GC loop (v4): Swept %zu expired connections", delete_count);
       free(delete_keys);
     }
 
@@ -282,6 +288,7 @@ static void *conntrack_gc_loop(void *arg) {
       for (size_t i = 0; i < delete_count_v6; i++) {
         bpf_map_delete_elem(fd_v6, &delete_keys_v6[i]);
       }
+      lfw_log_debug("GC loop (v6): Swept %zu expired connections", delete_count_v6);
       free(delete_keys_v6);
     }
   }
@@ -318,17 +325,67 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (argc < 2) {
-    fprintf(stderr, "Usage: %s <interface> [rules_file_path]\n", argv[0]);
+  const char *ifname = NULL;
+  const char *rules_path = NULL;
+  const char *cli_loglevel_str = NULL;
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--log-level") == 0) {
+      if (i + 1 < argc) {
+        cli_loglevel_str = argv[i + 1];
+        i++;
+      } else {
+        fprintf(stderr, "Error: --log-level requires an argument\n");
+        return 1;
+      }
+    } else if (strncmp(argv[i], "--log-level=", 12) == 0) {
+      cli_loglevel_str = argv[i] + 12;
+    } else if (argv[i][0] == '-') {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      return 1;
+    } else {
+      if (!ifname) {
+        ifname = argv[i];
+      } else if (!rules_path) {
+        rules_path = argv[i];
+      } else {
+        fprintf(stderr, "Too many arguments: %s\n", argv[i]);
+        return 1;
+      }
+    }
+  }
+
+  if (!ifname) {
+    fprintf(stderr, "Usage: %s <interface> [rules_file_path] [--log-level minimal|optimal|max|super_max]\n", argv[0]);
     return 1;
   }
 
-  const char *ifname = argv[1];
-  if (argc > 2) {
-    strncpy(g_config_path, argv[2], sizeof(g_config_path) - 1);
+  if (rules_path) {
+    strncpy(g_config_path, rules_path, sizeof(g_config_path) - 1);
+  }
+
+  if (cli_loglevel_str) {
+    lfw_loglevel_t cli_level = LFW_LOG_OPTIMAL;
+    if (strcasecmp(cli_loglevel_str, "minimal") == 0) {
+      cli_level = LFW_LOG_MINIMAL;
+    } else if (strcasecmp(cli_loglevel_str, "optimal") == 0) {
+      cli_level = LFW_LOG_OPTIMAL;
+    } else if (strcasecmp(cli_loglevel_str, "max") == 0) {
+      cli_level = LFW_LOG_MAX;
+    } else if (strcasecmp(cli_loglevel_str, "super_max") == 0) {
+      cli_level = LFW_LOG_SUPER_MAX;
+    } else {
+      fprintf(stderr, "Invalid log level: %s (choose minimal, optimal, max, super_max)\n", cli_loglevel_str);
+      return 1;
+    }
+    g_cli_loglevel_override = true;
+    g_cli_loglevel = cli_level;
   }
 
   lfw_log_init(LFW_LOG_SYSLOG);
+  if (g_cli_loglevel_override) {
+    lfw_log_set_level(g_cli_loglevel);
+  }
 
   // Register signal handlers
   struct sigaction sa = {};
@@ -342,12 +399,17 @@ int main(int argc, char **argv) {
   atexit(cleanup);
 
   // 1. Load config rules
+  lfw_loglevel_t file_loglevel = LFW_LOG_OPTIMAL;
   lfw_status_t st = lfw_config_load_file(g_config_path, &g_default_action,
-                                         &g_rules, &g_rule_count);
+                                         &g_rules, &g_rule_count, &file_loglevel);
 
   if (st != LFW_OK) {
     lfw_log_error("failed to load config: %s", g_config_path);
     return 1;
+  }
+
+  if (!g_cli_loglevel_override) {
+    lfw_log_set_level(file_loglevel);
   }
 
   // 2. Initialize BPF subsystem
@@ -370,7 +432,7 @@ int main(int argc, char **argv) {
   }
 
   // 3. Sync initial rules to BPF maps
-  st = lfw_bpf_sync_rules(g_rules, g_rule_count, g_default_action);
+  st = lfw_bpf_sync_rules(g_rules, g_rule_count, g_default_action, lfw_log_get_level());
   if (st != LFW_OK) {
     lfw_log_error("failed to sync rules to BPF maps");
     return 1;
@@ -396,18 +458,23 @@ int main(int argc, char **argv) {
       lfw_rule_t *new_rules = NULL;
       lfw_u32 new_rule_count = 0;
       lfw_action_t new_default_action = LFW_ACTION_DROP;
+      lfw_loglevel_t new_loglevel = LFW_LOG_OPTIMAL;
 
       lfw_status_t reload_st = lfw_config_load_file(
-          g_config_path, &new_default_action, &new_rules, &new_rule_count);
+          g_config_path, &new_default_action, &new_rules, &new_rule_count, &new_loglevel);
 
       if (reload_st == LFW_OK) {
+        lfw_loglevel_t active_loglevel = g_cli_loglevel_override ? g_cli_loglevel : new_loglevel;
         // Atomic BPF reload and replacement
-        if (lfw_bpf_reload(ifname, bpf_obj_path, new_rules, new_rule_count, new_default_action) ==
+        if (lfw_bpf_reload(ifname, bpf_obj_path, new_rules, new_rule_count, new_default_action, active_loglevel) ==
             LFW_OK) {
           lfw_config_free_rules(g_rules);
           g_rules = new_rules;
           g_rule_count = new_rule_count;
           g_default_action = new_default_action;
+          if (!g_cli_loglevel_override) {
+            lfw_log_set_level(new_loglevel);
+          }
           lfw_log_info("Rules configuration reloaded successfully");
         } else {
           lfw_config_free_rules(new_rules);

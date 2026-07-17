@@ -229,7 +229,7 @@ void lfw_bpf_cleanup(void)
 
 lfw_status_t lfw_bpf_reload(const char *ifname, const char *bpf_obj_path,
                             const lfw_rule_t *new_rules, lfw_u32 new_rule_count,
-                            lfw_action_t new_default_action)
+                            lfw_action_t new_default_action, lfw_loglevel_t log_level)
 {
     int new_ifindex = if_nametoindex(ifname);
     if (new_ifindex == 0) {
@@ -281,7 +281,7 @@ lfw_status_t lfw_bpf_reload(const char *ifname, const char *bpf_obj_path,
         return LFW_ERR_GENERIC;
     }
 
-    lfw_status_t st = lfw_bpf_sync_rules_to_fd(new_rules, new_rule_count, new_default_action,
+    lfw_status_t st = lfw_bpf_sync_rules_to_fd(new_rules, new_rule_count, new_default_action, log_level,
                                                rules_fd, config_fd, src_trie_fd, dst_trie_fd,
                                                src_trie6_fd, dst_trie6_fd);
     if (st != LFW_OK) {

@@ -8,6 +8,7 @@
 #include <string.h>
 
 static lfw_log_target_t g_log_target = LFW_LOG_CONSOLE;
+static lfw_loglevel_t g_log_level = LFW_LOG_OPTIMAL;
 
 void lfw_log_init(lfw_log_target_t target)
 {
@@ -116,6 +117,8 @@ void lfw_log_packet(const lfw_packet_t *pkt, lfw_verdict_t verdict)
 
 void lfw_log_info(const char *fmt, ...)
 {
+    if (g_log_level < LFW_LOG_OPTIMAL)
+        return;
     va_list args;
     va_start(args, fmt);
     if (g_log_target == LFW_LOG_SYSLOG) {
@@ -140,4 +143,30 @@ void lfw_log_error(const char *fmt, ...)
         fprintf(stderr, "\n");
     }
     va_end(args);
+}
+
+void lfw_log_debug(const char *fmt, ...)
+{
+    if (g_log_level < LFW_LOG_SUPER_MAX)
+        return;
+    va_list args;
+    va_start(args, fmt);
+    if (g_log_target == LFW_LOG_SYSLOG) {
+        vsyslog(LOG_DEBUG, fmt, args);
+    } else {
+        printf("[lfw] DEBUG: ");
+        vprintf(fmt, args);
+        printf("\n");
+    }
+    va_end(args);
+}
+
+void lfw_log_set_level(lfw_loglevel_t level)
+{
+    g_log_level = level;
+}
+
+lfw_loglevel_t lfw_log_get_level(void)
+{
+    return g_log_level;
 }

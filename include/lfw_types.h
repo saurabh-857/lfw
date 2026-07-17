@@ -79,4 +79,12 @@ typedef enum {
     LFW_ERR_NOT_SUPPORTED = -4
 } lfw_status_t;
 
+// Log level
+typedef enum {
+    LFW_LOG_MINIMAL = 0,
+    LFW_LOG_OPTIMAL = 1,
+    LFW_LOG_MAX = 2,
+    LFW_LOG_SUPER_MAX = 3
+} lfw_loglevel_t;
+
 #endif

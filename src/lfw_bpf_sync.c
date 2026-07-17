@@ -87,7 +87,7 @@ static void or_masks(struct rule_mask *dest, const struct rule_mask *src)
     }
 }
 
-lfw_status_t lfw_bpf_sync_rules_to_fd(const lfw_rule_t *rules, lfw_u32 rule_count, lfw_action_t default_action,
+lfw_status_t lfw_bpf_sync_rules_to_fd(const lfw_rule_t *rules, lfw_u32 rule_count, lfw_action_t default_action, lfw_loglevel_t log_level,
                                       int rules_fd, int config_fd, int src_trie_fd, int dst_trie_fd,
                                       int src_trie6_fd, int dst_trie6_fd)
 {
@@ -109,6 +109,13 @@ lfw_status_t lfw_bpf_sync_rules_to_fd(const lfw_rule_t *rules, lfw_u32 rule_coun
     __u32 val_cnt = rule_count > 256 ? 256 : rule_count;
     if (bpf_map_update_elem(config_fd, &idx_cnt, &val_cnt, BPF_ANY) != 0) {
         lfw_log_error("Failed to update config rule count: %s", strerror(errno));
+        return LFW_ERR_GENERIC;
+    }
+
+    __u32 idx_log = 2;
+    __u32 val_log = (__u32)log_level;
+    if (bpf_map_update_elem(config_fd, &idx_log, &val_log, BPF_ANY) != 0) {
+        lfw_log_error("Failed to update config log level: %s", strerror(errno));
         return LFW_ERR_GENERIC;
     }
 
@@ -675,7 +682,7 @@ void lfw_bpf_dump_stats(const lfw_rule_t *orig_rules, lfw_u32 orig_rule_count, l
     lfw_log_info("===========================");
 }
 
-lfw_status_t lfw_bpf_sync_rules(const lfw_rule_t *rules, lfw_u32 rule_count, lfw_action_t default_action)
+lfw_status_t lfw_bpf_sync_rules(const lfw_rule_t *rules, lfw_u32 rule_count, lfw_action_t default_action, lfw_loglevel_t log_level)
 {
     int rules_fd = lfw_bpf_get_rules_map_fd();
     int config_fd = lfw_bpf_get_config_map_fd();
@@ -684,7 +691,7 @@ lfw_status_t lfw_bpf_sync_rules(const lfw_rule_t *rules, lfw_u32 rule_count, lfw
     int src_trie6_fd = lfw_bpf_get_src_ip6_trie_fd();
     int dst_trie6_fd = lfw_bpf_get_dst_ip6_trie_fd();
 
-    return lfw_bpf_sync_rules_to_fd(rules, rule_count, default_action,
+    return lfw_bpf_sync_rules_to_fd(rules, rule_count, default_action, log_level,
                                     rules_fd, config_fd, src_trie_fd, dst_trie_fd,
                                     src_trie6_fd, dst_trie6_fd);
 }

@@ -24,5 +24,10 @@ void lfw_log_packet(const lfw_packet_t *pkt, lfw_verdict_t verdict);
 // General info and error logs
 void lfw_log_info(const char *fmt, ...);
 void lfw_log_error(const char *fmt, ...);
+void lfw_log_debug(const char *fmt, ...);
+
+// Log level configuration
+void lfw_log_set_level(lfw_loglevel_t level);
+lfw_loglevel_t lfw_log_get_level(void);
 
 #endif

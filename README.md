@@ -157,6 +157,33 @@ allow ah
 
 Place rules into `/etc/lfw/lfw.rules` (or another file specified on the command line).
 
+### 4.3 Log Levels
+
+To optimize performance and control logging verbosity, `lfw` supports configurable log levels. Logging verbosity can be set at four levels:
+
+*   **`minimal`**: Bypasses the telemetry pipeline completely. Only errors are logged to the console/syslog.
+*   **`optimal`** (default): Recommended for production. Captures daemon reloads and dropped packets (alarms/verdict events), but ignores allowed packet logs to prevent disk flooding.
+*   **`max`**: Captures all packet actions (both `ALLOW` and `DROP` logs).
+*   **`super_max`**: Captures all packet actions, details conntrack GC sweeps, and enables in-kernel debug tracing via `bpf_printk` (visible in `/sys/kernel/debug/tracing/trace_pipe`).
+
+#### Configuration via Rules File
+
+Define the log level in `/etc/lfw/lfw.rules` using the `loglevel` keyword:
+
+```text
+loglevel optimal
+```
+
+This can be updated dynamically on-the-fly without stopping the firewall daemon by reloading configuration using the `SIGHUP` signal.
+
+#### Command-Line Override
+
+You can override the rules file's log level at startup using the `--log-level` parameter:
+
+```bash
+sudo build/lfw <interface> --log-level super_max
+```
+
 
 ## 5. Running the Firewall
 

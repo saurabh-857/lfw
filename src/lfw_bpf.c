@@ -81,7 +81,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2);
+    __uint(max_entries, 3);
     __type(key, __u32);
     __type(value, __u32);
 } config_map SEC(".maps");
@@ -91,6 +91,46 @@ struct {
     __uint(max_entries, 256 * 1024);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } events_ringbuf SEC(".maps");
+
+static __attribute__((always_inline)) inline void submit_telemetry_v4(__u32 log_level, __be32 src_ip, __be32 dst_ip, __be16 src_port, __be16 dst_port, __u8 proto, __u8 action, __u64 pkt_len, __u64 timestamp)
+{
+    if (log_level == 0) return;
+    if (log_level == 1 && action == 1) return;
+
+    struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
+    if (event) {
+        event->ip_version = 4;
+        event->src_ip.v4 = src_ip;
+        event->dst_ip.v4 = dst_ip;
+        event->src_port = src_port;
+        event->dst_port = dst_port;
+        event->proto = proto;
+        event->action = action;
+        event->pkt_len = pkt_len;
+        event->timestamp = timestamp;
+        bpf_ringbuf_submit(event, 0);
+    }
+}
+
+static __attribute__((always_inline)) inline void submit_telemetry_v6(__u32 log_level, const struct in6_addr *src_ip, const struct in6_addr *dst_ip, __be16 src_port, __be16 dst_port, __u8 proto, __u8 action, __u64 pkt_len, __u64 timestamp)
+{
+    if (log_level == 0) return;
+    if (log_level == 1 && action == 1) return;
+
+    struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
+    if (event) {
+        event->ip_version = 6;
+        __builtin_memcpy(&event->src_ip.v6, src_ip, sizeof(struct in6_addr));
+        __builtin_memcpy(&event->dst_ip.v6, dst_ip, sizeof(struct in6_addr));
+        event->src_port = src_port;
+        event->dst_port = dst_port;
+        event->proto = proto;
+        event->action = action;
+        event->pkt_len = pkt_len;
+        event->timestamp = timestamp;
+        bpf_ringbuf_submit(event, 0);
+    }
+}
 
 // IPv6 Address Helper Comparison
 static inline int ip6_cmp(const struct in6_addr *a, const struct in6_addr *b)
@@ -153,6 +193,20 @@ static __attribute__((noinline)) int do_ipv4_filter(struct __sk_buff *skb, struc
         dst_port = udp->dest;
     }
 
+    __u32 config_idx_log = 2;
+    __u32 *p_log_level = bpf_map_lookup_elem(&config_map, &config_idx_log);
+    __u32 log_level = p_log_level ? *p_log_level : 1;
+
+    if (log_level == 3) {
+        bpf_printk("[lfw] IPv4: proto=%u, src=%x:%u, dst=%x:%u\n",
+                   lfw_proto, bpf_ntohl(src_ip), bpf_ntohs(src_port),
+                   bpf_ntohl(dst_ip), bpf_ntohs(dst_port));
+        if (lfw_proto == IPPROTO_TCP) {
+            bpf_printk("[lfw] TCP flags: SYN=%u, ACK=%u, FIN=%u, RST=%u\n",
+                       tcp_syn, tcp_ack, tcp_fin, tcp_rst);
+        }
+    }
+
     // Conntrack
     __u8 conntrack_found = 0;
     __u64 now = bpf_ktime_get_ns();
@@ -211,18 +265,9 @@ static __attribute__((noinline)) int do_ipv4_filter(struct __sk_buff *skb, struc
                     if ((val->state == 0 && src_ip == key.dst_ip) ||
                         (val->state == 1 && src_ip == key.src_ip)) {
                         val->state = 2; // Replied
-                        struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
-                        if (event) {
-                            event->ip_version = 4;
-                            event->src_ip.v4 = src_ip;
-                            event->dst_ip.v4 = dst_ip;
-                            event->src_port = src_port;
-                            event->dst_port = dst_port;
-                            event->proto = lfw_proto;
-                            event->action = val->action;
-                            event->pkt_len = pkt_len;
-                            event->timestamp = now;
-                            bpf_ringbuf_submit(event, 0);
+                        submit_telemetry_v4(log_level, src_ip, dst_ip, src_port, dst_port, lfw_proto, val->action, pkt_len, now);
+                        if (log_level == 3) {
+                            bpf_printk("[lfw] UDP conntrack replied\n");
                         }
                     }
                 }
@@ -240,18 +285,9 @@ static __attribute__((noinline)) int do_ipv4_filter(struct __sk_buff *skb, struc
     // Out-of-state checks
     if (lfw_proto == IPPROTO_TCP && !conntrack_found && !is_loopback_v4(src_ip)) {
         if (!tcp_syn || tcp_ack || tcp_rst || tcp_fin) {
-            struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
-            if (event) {
-                event->ip_version = 4;
-                event->src_ip.v4 = src_ip;
-                event->dst_ip.v4 = dst_ip;
-                event->src_port = src_port;
-                event->dst_port = dst_port;
-                event->proto = lfw_proto;
-                event->action = 2; // DROP
-                event->pkt_len = pkt_len;
-                event->timestamp = now;
-                bpf_ringbuf_submit(event, 0);
+            submit_telemetry_v4(log_level, src_ip, dst_ip, src_port, dst_port, lfw_proto, 2 /* DROP */, pkt_len, now);
+            if (log_level == 3) {
+                bpf_printk("[lfw] Out-of-state TCP packet dropped\n");
             }
             return TC_ACT_SHOT;
         }
@@ -337,20 +373,12 @@ static __attribute__((noinline)) int do_ipv4_filter(struct __sk_buff *skb, struc
         __sync_fetch_and_add(&matched_rule->byte_count, pkt_len);
     }
 
+    if (log_level == 3) {
+        bpf_printk("[lfw] LPM lookup: src_matched=%u, decision=%u\n", src_matched, decision_action);
+    }
+
     if (decision_action != 0) {
-        struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
-        if (event) {
-            event->ip_version = 4;
-            event->src_ip.v4 = src_ip;
-            event->dst_ip.v4 = dst_ip;
-            event->src_port = src_port;
-            event->dst_port = dst_port;
-            event->proto = lfw_proto;
-            event->action = decision_action;
-            event->pkt_len = pkt_len;
-            event->timestamp = now;
-            bpf_ringbuf_submit(event, 0);
-        }
+        submit_telemetry_v4(log_level, src_ip, dst_ip, src_port, dst_port, lfw_proto, decision_action, pkt_len, now);
     }
 
     if (decision_action == 1 && (lfw_proto == IPPROTO_TCP || lfw_proto == IPPROTO_UDP)) {
@@ -439,7 +467,22 @@ static __attribute__((noinline)) int do_ipv6_filter(struct __sk_buff *skb, struc
             return TC_ACT_OK;
         src_port = udp->source;
         dst_port = udp->dest;
-    }    // Conntrack
+    }
+
+    __u32 config_idx_log = 2;
+    __u32 *p_log_level = bpf_map_lookup_elem(&config_map, &config_idx_log);
+    __u32 log_level = p_log_level ? *p_log_level : 1;
+
+    if (log_level == 3) {
+        bpf_printk("[lfw] IPv6: proto=%u, sport=%u, dport=%u\n",
+                   lfw_proto, bpf_ntohs(src_port), bpf_ntohs(dst_port));
+        if (lfw_proto == IPPROTO_TCP) {
+            bpf_printk("[lfw] TCP flags (v6): SYN=%u, ACK=%u, FIN=%u, RST=%u\n",
+                       tcp_syn, tcp_ack, tcp_fin, tcp_rst);
+        }
+    }
+
+    // Conntrack
     __u8 conntrack_found = 0;
     __u64 now = bpf_ktime_get_ns();
     __u64 pkt_len = skb->len;
@@ -498,18 +541,9 @@ static __attribute__((noinline)) int do_ipv6_filter(struct __sk_buff *skb, struc
                     if ((val->state == 0 && ip6_cmp(saddr, &key6.dst_ip) == 0) ||
                         (val->state == 1 && ip6_cmp(saddr, &key6.src_ip) == 0)) {
                         val->state = 2; // LFW_UDP_STATE_REPLIED
-                        struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
-                        if (event) {
-                            event->ip_version = 6;
-                            __builtin_memcpy(&event->src_ip.v6, saddr, sizeof(struct in6_addr));
-                            __builtin_memcpy(&event->dst_ip.v6, daddr, sizeof(struct in6_addr));
-                            event->src_port = src_port;
-                            event->dst_port = dst_port;
-                            event->proto = lfw_proto;
-                            event->action = val->action;
-                            event->pkt_len = pkt_len;
-                            event->timestamp = now;
-                            bpf_ringbuf_submit(event, 0);
+                        submit_telemetry_v6(log_level, saddr, daddr, src_port, dst_port, lfw_proto, val->action, pkt_len, now);
+                        if (log_level == 3) {
+                            bpf_printk("[lfw] UDP conntrack replied (v6)\n");
                         }
                     }
                 }
@@ -527,18 +561,9 @@ static __attribute__((noinline)) int do_ipv6_filter(struct __sk_buff *skb, struc
     // Out-of-state checks
     if (lfw_proto == IPPROTO_TCP && !conntrack_found && !is_loopback_v6(saddr)) {
         if (!tcp_syn || tcp_ack || tcp_rst || tcp_fin) {
-            struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
-            if (event) {
-                event->ip_version = 6;
-                __builtin_memcpy(&event->src_ip.v6, saddr, sizeof(struct in6_addr));
-                __builtin_memcpy(&event->dst_ip.v6, daddr, sizeof(struct in6_addr));
-                event->src_port = src_port;
-                event->dst_port = dst_port;
-                event->proto = lfw_proto;
-                event->action = 2; // DROP
-                event->pkt_len = pkt_len;
-                event->timestamp = now;
-                bpf_ringbuf_submit(event, 0);
+            submit_telemetry_v6(log_level, saddr, daddr, src_port, dst_port, lfw_proto, 2 /* DROP */, pkt_len, now);
+            if (log_level == 3) {
+                bpf_printk("[lfw] Out-of-state TCP packet dropped (v6)\n");
             }
             return TC_ACT_SHOT;
         }
@@ -626,20 +651,12 @@ static __attribute__((noinline)) int do_ipv6_filter(struct __sk_buff *skb, struc
         __sync_fetch_and_add(&matched_rule->byte_count, pkt_len);
     }
 
+    if (log_level == 3) {
+        bpf_printk("[lfw] LPM lookup (v6): src_matched=%u, decision=%u\n", src_matched, decision_action);
+    }
+
     if (decision_action != 0) {
-        struct lfw_event *event = bpf_ringbuf_reserve(&events_ringbuf, sizeof(struct lfw_event), 0);
-        if (event) {
-            event->ip_version = 6;
-            __builtin_memcpy(&event->src_ip.v6, saddr, sizeof(struct in6_addr));
-            __builtin_memcpy(&event->dst_ip.v6, daddr, sizeof(struct in6_addr));
-            event->src_port = src_port;
-            event->dst_port = dst_port;
-            event->proto = lfw_proto;
-            event->action = decision_action;
-            event->pkt_len = pkt_len;
-            event->timestamp = now;
-            bpf_ringbuf_submit(event, 0);
-        }
+        submit_telemetry_v6(log_level, saddr, daddr, src_port, dst_port, lfw_proto, decision_action, pkt_len, now);
     }
 
     if (decision_action == 1 && (lfw_proto == IPPROTO_TCP || lfw_proto == IPPROTO_UDP)) {
