@@ -61,7 +61,18 @@ int main(int argc, char **argv)
                                   &rule_count,
                                   &dummy_loglevel);
 
-    if (status != LFW_OK) {
+    if (status == LFW_OK) {
+        lfw_rule_t *expanded_rules = NULL;
+        lfw_u32 expanded_count = 0;
+        lfw_status_t exp_status = lfw_rules_expand_fqdn(rules, rule_count, &expanded_rules, &expanded_count);
+        if (exp_status == LFW_OK) {
+            lfw_config_free_rules(rules);
+            rules = expanded_rules;
+            rule_count = expanded_count;
+        } else {
+            fprintf(stderr, "[lfw-pcap] warning: failed to expand FQDN rules\n");
+        }
+    } else {
         fprintf(stderr,
                 "[lfw-pcap] warning: failed to load config '%s', "
                 "falling back to default policy: deny all inbound\n",

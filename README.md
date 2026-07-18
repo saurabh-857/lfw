@@ -11,6 +11,7 @@
 * **eBPF/TC-based filtering**: Intercepts packets in-kernel at the Traffic Control (TC) ingress/egress hooks and issues high-performance ACCEPT or DROP/SHOT verdicts.
 * **Stateful connection tracking**: Tracks active 5-tuple connections (Source IP, Destination IP, Source Port, Destination Port, Protocol) for both IPv4 and IPv6, with a background thread that periodically purges expired connections.
 * **Subnet/CIDR Matching**: Supports bitwise subnet masking for both IPv4 and IPv6 rule definitions (e.g. `/24`, `/64`, `/32`, or `any`).
+* **FQDN / Domain Name Matching**: Supports specifying domain names (e.g. `google.com` or `facebook.com`) directly in rules, resolved in userspace and updated dynamically.
 * **Port Range Support**: Allows matching destination ports by ranges (e.g. `67-68` or `546-547`) or single ports.
 * **Thread-Safe Architecture**: Full concurrency protection utilizing reader-writer locks (`pthread_rwlock_t`) for rules evaluation/reload and mutexes (`pthread_mutex_t`) for connection tracking.
 * **On-the-fly Config Reload (SIGHUP)**: Dynamic reload of rulesets without terminating the daemon or dropping active connection tracking states.
@@ -111,7 +112,7 @@ ACTION [PROTO] [PORT] [from SRC] [to DST]
 - **ACTION**: `allow` | `deny` (or `drop`)
 - **PROTO**: `any` | `tcp` | `udp` | `icmp` | `igmp` | `icmpv6` | `esp` | `ah` (optional, default: any)
 - **PORT**: single port (e.g. `22`), port range (e.g. `67-68`), or `PORT/PROTO` (e.g. `53/udp`) (optional; matches destination port/range)
-- **SRC/DST**: `any`, IPv4 address (e.g. `192.168.1.10`), IPv6 address (e.g. `2001:db8::1`), IPv4 CIDR (e.g. `192.168.1.0/24`), or IPv6 CIDR (e.g. `2001:db8::/32`)
+- **SRC/DST**: `any`, IPv4 address (e.g. `192.168.1.10`), IPv6 address (e.g. `2001:db8::1`), IPv4 CIDR (e.g. `192.168.1.0/24`), IPv6 CIDR (e.g. `2001:db8::/32`), or FQDN/domain name (e.g. `google.com`)
 
 Lines starting with `#` or empty lines are ignored.
 
@@ -153,6 +154,14 @@ allow icmpv6
 # Allow IPsec VPN traffic
 allow esp
 allow ah
+
+# Block distracting websites by FQDN domain (must precede general allows)
+deny tcp 443 to facebook.com
+deny tcp 443 to twitter.com
+
+# Allow specific enterprise services by FQDN domain
+allow tcp 443 to github.com
+allow tcp 443 to google.com
 ```
 
 Place rules into `/etc/lfw/lfw.rules` (or another file specified on the command line).
@@ -294,6 +303,7 @@ The firewall daemon can also be manually managed on a specific interface using s
 * **Transitive Nested Subnets Rule Mask Merging**: Because eBPF LPM trie lookups only return the most specific matching prefix, rules configured for larger enclosing subnets or "any" IP would normally be bypassed. The userspace daemon solves this by dynamically propagating (OR'ing) rule bitmasks from parent subnets down to their nested child subnets during synchronization, ensuring accurate rule evaluation in $O(\log N)$ in-kernel lookups.
 * **eBPF Ring Buffer Telemetry**: A high-performance BPF Ring Buffer map (`events_ringbuf`) used to stream real-time packet verdicts (ALLOW, DROP) and header metadata from the kernel filter directly to userspace.
 * **Background Housekeeper**: A userspace thread that periodically sweeps `conntrack_map` and `conntrack_map_v6` in the kernel and deletes expired connections using state-specific timeouts (e.g. shorter timeouts for unfinished TCP handshakes).
+* **Background FQDN Resolver**: A userspace thread that periodically (every 60 seconds) resolves FQDN rules to active IP addresses. If resolved IPs change, it reloads rules atomically using a mutex lock to guarantee thread safety.
 * **Config Loader**: Parses text-based rules files in userspace, executes transitive rule mask merging, and synchronizes compiled rule structures, policies, and tries to the BPF maps.
 
 

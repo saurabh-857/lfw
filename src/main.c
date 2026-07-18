@@ -30,16 +30,22 @@ static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload_requested = 0;
 static volatile sig_atomic_t g_dump_requested = 0;
 
+static lfw_rule_t *g_raw_rules = NULL;
+static lfw_u32 g_raw_rule_count = 0;
 static lfw_rule_t *g_rules = NULL;
 static lfw_u32 g_rule_count = 0;
 static lfw_action_t g_default_action = LFW_ACTION_DROP;
 static char g_config_path[256] = "/etc/lfw/lfw.rules";
+static char g_ifname[32] = {0};
 
 static bool g_cli_loglevel_override = false;
 static lfw_loglevel_t g_cli_loglevel = LFW_LOG_OPTIMAL;
 
 static pthread_t g_gc_thread;
 static bool g_gc_running = false;
+
+static pthread_t g_fqdn_thread;
+static bool g_fqdn_running = false;
 
 static pthread_t g_telemetry_thread;
 static bool g_telemetry_running = false;
@@ -190,6 +196,8 @@ static void *conntrack_gc_loop(void *arg) {
 
     lfw_log_debug("GC loop: Starting connection tracking sweep...");
 
+    lfw_bpf_lock();
+
     // IPv4 GC
     int fd = lfw_bpf_get_conntrack_map_fd();
     if (fd >= 0) {
@@ -291,6 +299,69 @@ static void *conntrack_gc_loop(void *arg) {
       lfw_log_debug("GC loop (v6): Swept %zu expired connections", delete_count_v6);
       free(delete_keys_v6);
     }
+
+    lfw_bpf_unlock();
+  }
+  return NULL;
+}
+
+static void *fqdn_resolver_loop(void *arg) {
+  (void)arg;
+  const char *bpf_obj_path = "build/lfw_bpf.o";
+  if (access(bpf_obj_path, F_OK) != 0) {
+    bpf_obj_path = "/usr/local/share/lfw/lfw_bpf.o";
+  }
+
+  while (g_running) {
+    for (int i = 0; i < 60 && g_running; i++) {
+      sleep(1);
+    }
+    if (!g_running)
+      break;
+
+    lfw_bpf_lock();
+    if (!g_raw_rules || g_raw_rule_count == 0) {
+      lfw_bpf_unlock();
+      continue;
+    }
+
+    lfw_rule_t *new_concrete_rules = NULL;
+    lfw_u32 new_concrete_count = 0;
+    lfw_status_t st = lfw_rules_expand_fqdn(g_raw_rules, g_raw_rule_count, &new_concrete_rules, &new_concrete_count);
+    if (st != LFW_OK) {
+      lfw_bpf_unlock();
+      continue;
+    }
+
+    bool changed = false;
+    if (new_concrete_count != g_rule_count) {
+      changed = true;
+    } else {
+      for (lfw_u32 i = 0; i < g_rule_count; i++) {
+        if (memcmp(&g_rules[i].match, &new_concrete_rules[i].match, sizeof(lfw_rule_match_t)) != 0 ||
+            g_rules[i].action != new_concrete_rules[i].action) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (changed) {
+      lfw_log_info("FQDN resolved IPs changed, reloading BPF maps...");
+      lfw_loglevel_t active_loglevel = g_cli_loglevel_override ? g_cli_loglevel : LFW_LOG_OPTIMAL;
+      if (lfw_bpf_reload(g_ifname, bpf_obj_path, new_concrete_rules, new_concrete_count, g_default_action, active_loglevel) == LFW_OK) {
+        lfw_config_free_rules(g_rules);
+        g_rules = new_concrete_rules;
+        g_rule_count = new_concrete_count;
+        lfw_log_info("FQDN rules atomically reloaded");
+      } else {
+        lfw_config_free_rules(new_concrete_rules);
+        lfw_log_error("Failed to reload BPF maps with updated FQDN IPs");
+      }
+    } else {
+      lfw_config_free_rules(new_concrete_rules);
+    }
+    lfw_bpf_unlock();
   }
   return NULL;
 }
@@ -309,11 +380,22 @@ static void cleanup(void) {
     g_gc_running = false;
   }
 
+  if (g_fqdn_running) {
+    pthread_join(g_fqdn_thread, NULL);
+    g_fqdn_running = false;
+  }
+
+  lfw_bpf_lock();
   lfw_bpf_cleanup();
+  lfw_bpf_unlock();
 
   if (g_rules) {
     lfw_config_free_rules(g_rules);
     g_rules = NULL;
+  }
+  if (g_raw_rules) {
+    lfw_config_free_rules(g_raw_rules);
+    g_raw_rules = NULL;
   }
   lfw_log_close();
 }
@@ -398,13 +480,24 @@ int main(int argc, char **argv) {
 
   atexit(cleanup);
 
+  if (ifname) {
+    strncpy(g_ifname, ifname, sizeof(g_ifname) - 1);
+  }
+
   // 1. Load config rules
   lfw_loglevel_t file_loglevel = LFW_LOG_OPTIMAL;
   lfw_status_t st = lfw_config_load_file(g_config_path, &g_default_action,
-                                         &g_rules, &g_rule_count, &file_loglevel);
+                                         &g_raw_rules, &g_raw_rule_count, &file_loglevel);
 
   if (st != LFW_OK) {
     lfw_log_error("failed to load config: %s", g_config_path);
+    return 1;
+  }
+
+  // Expand FQDN rules
+  st = lfw_rules_expand_fqdn(g_raw_rules, g_raw_rule_count, &g_rules, &g_rule_count);
+  if (st != LFW_OK) {
+    lfw_log_error("failed to expand FQDN rules");
     return 1;
   }
 
@@ -446,6 +539,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // Spawn FQDN re-resolution thread
+  if (pthread_create(&g_fqdn_thread, NULL, fqdn_resolver_loop, NULL) == 0) {
+    g_fqdn_running = true;
+  } else {
+    lfw_log_error("failed to spawn FQDN resolver thread");
+    return 1;
+  }
+
   lfw_log_info("daemon starting on interface %s", ifname);
   lfw_log_info("config: %s, rules: %u, default: %s", g_config_path,
                g_rule_count,
@@ -464,22 +565,36 @@ int main(int argc, char **argv) {
           g_config_path, &new_default_action, &new_rules, &new_rule_count, &new_loglevel);
 
       if (reload_st == LFW_OK) {
-        lfw_loglevel_t active_loglevel = g_cli_loglevel_override ? g_cli_loglevel : new_loglevel;
-        // Atomic BPF reload and replacement
-        if (lfw_bpf_reload(ifname, bpf_obj_path, new_rules, new_rule_count, new_default_action, active_loglevel) ==
-            LFW_OK) {
-          lfw_config_free_rules(g_rules);
-          g_rules = new_rules;
-          g_rule_count = new_rule_count;
-          g_default_action = new_default_action;
-          if (!g_cli_loglevel_override) {
-            lfw_log_set_level(new_loglevel);
+        lfw_bpf_lock();
+        lfw_rule_t *expanded_rules = NULL;
+        lfw_u32 expanded_count = 0;
+        lfw_status_t exp_status = lfw_rules_expand_fqdn(new_rules, new_rule_count, &expanded_rules, &expanded_count);
+        if (exp_status == LFW_OK) {
+          lfw_loglevel_t active_loglevel = g_cli_loglevel_override ? g_cli_loglevel : new_loglevel;
+          if (lfw_bpf_reload(g_ifname, bpf_obj_path, expanded_rules, expanded_count, new_default_action, active_loglevel) == LFW_OK) {
+            lfw_config_free_rules(g_raw_rules);
+            g_raw_rules = new_rules;
+            g_raw_rule_count = new_rule_count;
+
+            lfw_config_free_rules(g_rules);
+            g_rules = expanded_rules;
+            g_rule_count = expanded_count;
+
+            g_default_action = new_default_action;
+            if (!g_cli_loglevel_override) {
+              lfw_log_set_level(new_loglevel);
+            }
+            lfw_log_info("Rules configuration reloaded successfully");
+          } else {
+            lfw_config_free_rules(expanded_rules);
+            lfw_config_free_rules(new_rules);
+            lfw_log_error("Failed to reload and sync new rules to BPF");
           }
-          lfw_log_info("Rules configuration reloaded successfully");
         } else {
           lfw_config_free_rules(new_rules);
-          lfw_log_error("Failed to reload and sync new rules to BPF");
+          lfw_log_error("Failed to expand FQDN rules during reload");
         }
+        lfw_bpf_unlock();
       } else {
         lfw_log_error("Failed to reload rules configuration file: %s",
                       g_config_path);
@@ -488,7 +603,9 @@ int main(int argc, char **argv) {
 
     if (g_dump_requested) {
       g_dump_requested = 0;
+      lfw_bpf_lock();
       lfw_bpf_dump_stats(g_rules, g_rule_count, g_default_action);
+      lfw_bpf_unlock();
     }
 
     pause();

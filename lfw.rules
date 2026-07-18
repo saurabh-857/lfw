@@ -48,7 +48,19 @@ allow icmp
 allow icmpv6
 
 # =====================================================================
-# SECTION 3: CORE SERVICES (DNS & WEB SURFING)
+# SECTION 3: FQDN BLACKLIST / SPECIFIC POLICIES (Must precede general allowed ports)
+# =====================================================================
+
+# Block distracting social media sites
+deny tcp 443 to facebook.com
+deny tcp 443 to twitter.com
+
+# Allow specific enterprise services
+allow tcp 443 to github.com
+allow tcp 443 to google.com
+
+# =====================================================================
+# SECTION 4: CORE SERVICES (DNS & GENERAL SURFING)
 # =====================================================================
 
 # DNS (UDP & TCP Port 53)
@@ -66,7 +78,7 @@ allow udp 443 to any
 allow tcp 80 to any
 
 # =====================================================================
-# SECTION 4: PROFESSIONAL & DEVELOPER TOOLS
+# SECTION 5: PROFESSIONAL & DEVELOPER TOOLS
 # =====================================================================
 
 # Secure Shell (SSH - TCP Port 22)

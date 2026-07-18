@@ -101,6 +101,15 @@ lfw_status_t lfw_engine_reload_rules(lfw_engine_t *engine)
         return st;
     }
 
+    lfw_rule_t *expanded_rules = NULL;
+    lfw_u32 expanded_count = 0;
+    lfw_status_t exp_status = lfw_rules_expand_fqdn(new_rules, new_rule_count, &expanded_rules, &expanded_count);
+    if (exp_status == LFW_OK) {
+        lfw_config_free_rules(new_rules);
+        new_rules = expanded_rules;
+        new_rule_count = expanded_count;
+    }
+
     pthread_rwlock_wrlock(&engine->rules_lock);
 
     if (engine->ruleset.rules) {

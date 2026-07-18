@@ -11,6 +11,19 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <pthread.h>
+
+static pthread_mutex_t g_bpf_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void lfw_bpf_lock(void)
+{
+    pthread_mutex_lock(&g_bpf_mutex);
+}
+
+void lfw_bpf_unlock(void)
+{
+    pthread_mutex_unlock(&g_bpf_mutex);
+}
 
 static struct bpf_object *g_bpf_obj = NULL;
 static int g_ifindex = 0;

@@ -115,3 +115,166 @@ bool lfw_rule_match(const lfw_rule_t *rule,
 
     return true;
 }
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+struct resolved_ip {
+    lfw_ip_t ip;
+    lfw_ip_t mask;
+};
+
+static int resolve_domain(const char *fqdn, struct resolved_ip **out_ips)
+{
+    struct addrinfo hints, *res = NULL, *p;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    int status = getaddrinfo(fqdn, NULL, &hints, &res);
+    if (status != 0) {
+        return 0;
+    }
+
+    int count = 0;
+    for (p = res; p != NULL; p = p->ai_next) {
+        if (p->ai_family == AF_INET || p->ai_family == AF_INET6) {
+            count++;
+        }
+    }
+
+    if (count == 0) {
+        freeaddrinfo(res);
+        return 0;
+    }
+
+    struct resolved_ip *ips = malloc(count * sizeof(struct resolved_ip));
+    if (!ips) {
+        freeaddrinfo(res);
+        return 0;
+    }
+
+    int idx = 0;
+    for (p = res; p != NULL; p = p->ai_next) {
+        if (p->ai_family == AF_INET) {
+            struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+            ips[idx].ip.ip_version = 4;
+            ips[idx].ip.v4.addr = ipv4->sin_addr.s_addr;
+            ips[idx].mask.ip_version = 4;
+            ips[idx].mask.v4.addr = 0xFFFFFFFFu;
+            idx++;
+        } else if (p->ai_family == AF_INET6) {
+            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
+            ips[idx].ip.ip_version = 6;
+            memcpy(ips[idx].ip.v6.addr, ipv6->sin6_addr.s6_addr, 16);
+            ips[idx].mask.ip_version = 6;
+            memset(ips[idx].mask.v6.addr, 0xFF, 16);
+            idx++;
+        }
+    }
+
+    freeaddrinfo(res);
+    *out_ips = ips;
+    return count;
+}
+
+lfw_status_t lfw_rules_expand_fqdn(const lfw_rule_t *raw_rules, lfw_u32 raw_count,
+                                   lfw_rule_t **expanded_rules, lfw_u32 *expanded_count)
+{
+    lfw_u32 cap = raw_count > 0 ? raw_count * 2 : 16;
+    lfw_rule_t *list = malloc(cap * sizeof(lfw_rule_t));
+    if (!list) return LFW_ERR_NO_MEMORY;
+
+    lfw_u32 count = 0;
+
+    for (lfw_u32 i = 0; i < raw_count; i++) {
+        const lfw_rule_t *raw = &raw_rules[i];
+
+        struct resolved_ip *src_ips = NULL;
+        int src_count = 0;
+        if (raw->match.has_src_fqdn) {
+            src_count = resolve_domain(raw->match.src_fqdn, &src_ips);
+            if (src_count == 0) {
+                fprintf(stderr, "[lfw] Warning: failed to resolve FQDN '%s'\n", raw->match.src_fqdn);
+                continue;
+            }
+        }
+
+        struct resolved_ip *dst_ips = NULL;
+        int dst_count = 0;
+        if (raw->match.has_dst_fqdn) {
+            dst_count = resolve_domain(raw->match.dst_fqdn, &dst_ips);
+            if (dst_count == 0) {
+                fprintf(stderr, "[lfw] Warning: failed to resolve FQDN '%s'\n", raw->match.dst_fqdn);
+                free(src_ips);
+                continue;
+            }
+        }
+
+        int loop_src = src_count > 0 ? src_count : 1;
+        int loop_dst = dst_count > 0 ? dst_count : 1;
+
+        for (int s = 0; s < loop_src; s++) {
+            for (int d = 0; d < loop_dst; d++) {
+                lfw_rule_t rule = *raw;
+
+                if (raw->match.has_src_fqdn) {
+                    rule.match.src_ip = src_ips[s].ip;
+                    rule.match.src_mask = src_ips[s].mask;
+                    rule.match.match_src_ip = true;
+                }
+                if (raw->match.has_dst_fqdn) {
+                    rule.match.dst_ip = dst_ips[d].ip;
+                    rule.match.dst_mask = dst_ips[d].mask;
+                    rule.match.match_dst_ip = true;
+                }
+
+                if (rule.match.match_src_ip && rule.match.match_dst_ip) {
+                    if (rule.match.src_ip.ip_version != rule.match.dst_ip.ip_version) {
+                        continue;
+                    }
+                    rule.match.ip_version = rule.match.src_ip.ip_version;
+                } else if (rule.match.match_src_ip) {
+                    rule.match.ip_version = rule.match.src_ip.ip_version;
+                } else if (rule.match.match_dst_ip) {
+                    rule.match.ip_version = rule.match.dst_ip.ip_version;
+                } else {
+                    rule.match.ip_version = 0;
+                }
+
+                bool dup = false;
+                for (lfw_u32 k = 0; k < count; k++) {
+                    if (memcmp(&list[k].match, &rule.match, sizeof(lfw_rule_match_t)) == 0 &&
+                        list[k].action == rule.action) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (dup) continue;
+
+                if (count >= cap) {
+                    cap *= 2;
+                    lfw_rule_t *tmp = realloc(list, cap * sizeof(lfw_rule_t));
+                    if (!tmp) {
+                        free(src_ips);
+                        free(dst_ips);
+                        free(list);
+                        return LFW_ERR_NO_MEMORY;
+                    }
+                    list = tmp;
+                }
+                list[count++] = rule;
+            }
+        }
+        free(src_ips);
+        free(dst_ips);
+    }
+
+    *expanded_rules = list;
+    *expanded_count = count;
+    return LFW_OK;
+}

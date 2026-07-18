@@ -30,6 +30,11 @@ typedef struct {
     bool             match_dst_port;
 
     uint8_t          ip_version; // 0: any, 4: IPv4, 6: IPv6
+
+    char             src_fqdn[128];
+    char             dst_fqdn[128];
+    bool             has_src_fqdn;
+    bool             has_dst_fqdn;
 } lfw_rule_match_t;
 
 // Firewall rule
@@ -42,5 +47,9 @@ typedef struct {
 
 // Match API
 bool lfw_rule_match(const lfw_rule_t *rule, const lfw_packet_t *packet);
+
+// FQDN API
+lfw_status_t lfw_rules_expand_fqdn(const lfw_rule_t *raw_rules, lfw_u32 raw_count,
+                                   lfw_rule_t **expanded_rules, lfw_u32 *expanded_count);
 
 #endif

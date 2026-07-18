@@ -26,6 +26,18 @@ static void init_rule(lfw_rule_t *rule, lfw_action_t action)
     rule->match.protocol = LFW_PROTO_ANY;
 }
 
+static bool is_valid_fqdn(const char *str)
+{
+    if (!str || *str == '\0')
+        return false;
+    for (int i = 0; str[i] != '\0'; i++) {
+        char c = str[i];
+        if (!isalnum((unsigned char)c) && c != '.' && c != '-')
+            return false;
+    }
+    return true;
+}
+
 static bool parse_ipv4(const char *text, lfw_ipv4_t *out)
 {
     struct in_addr addr;
@@ -362,10 +374,16 @@ static lfw_status_t parse_rule_line(char *line,
                 return LFW_ERR_INVALID;
 
             if (strcasecmp(ip, "any") != 0) {
-                if (!parse_ip_cidr(ip, &rule.match.src_ip, &rule.match.src_mask))
-                    return LFW_ERR_INVALID;
-
-                rule.match.match_src_ip = true;
+                if (!parse_ip_cidr(ip, &rule.match.src_ip, &rule.match.src_mask)) {
+                    if (is_valid_fqdn(ip) && strlen(ip) < sizeof(rule.match.src_fqdn)) {
+                        strncpy(rule.match.src_fqdn, ip, sizeof(rule.match.src_fqdn) - 1);
+                        rule.match.has_src_fqdn = true;
+                    } else {
+                        return LFW_ERR_INVALID;
+                    }
+                } else {
+                    rule.match.match_src_ip = true;
+                }
             }
         }
         else if (strcasecmp(tok, "to") == 0) {
@@ -374,10 +392,16 @@ static lfw_status_t parse_rule_line(char *line,
                 return LFW_ERR_INVALID;
 
             if (strcasecmp(ip, "any") != 0) {
-                if (!parse_ip_cidr(ip, &rule.match.dst_ip, &rule.match.dst_mask))
-                    return LFW_ERR_INVALID;
-
-                rule.match.match_dst_ip = true;
+                if (!parse_ip_cidr(ip, &rule.match.dst_ip, &rule.match.dst_mask)) {
+                    if (is_valid_fqdn(ip) && strlen(ip) < sizeof(rule.match.dst_fqdn)) {
+                        strncpy(rule.match.dst_fqdn, ip, sizeof(rule.match.dst_fqdn) - 1);
+                        rule.match.has_dst_fqdn = true;
+                    } else {
+                        return LFW_ERR_INVALID;
+                    }
+                } else {
+                    rule.match.match_dst_ip = true;
+                }
             }
         }
         else {

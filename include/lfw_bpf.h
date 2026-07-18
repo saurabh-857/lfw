@@ -39,4 +39,8 @@ int lfw_bpf_get_dst_ip6_trie_fd(void);
 int lfw_bpf_get_conntrack_map_v6_fd(void);
 int lfw_bpf_get_events_ringbuf_fd(void);
 
+// Thread safety locking helpers
+void lfw_bpf_lock(void);
+void lfw_bpf_unlock(void);
+
 #endif
